@@ -18,36 +18,86 @@ import (
 type Manager struct {
 	sources   map[string]*SourceInfo // ID -> SourceInfo
 	idCounter int                    // ID 计数器（用于生成唯一 ID）
+	storage   *Storage               // 持久化存储
 }
 
 // NewManager 创建一个新的音源管理器
-func NewManager() *Manager {
-	return &Manager{
+// baseDir: 存储目录的基础路径（WASM 沙盒内路径）
+func NewManager(baseDir string) (*Manager, error) {
+	// 创建存储实例
+	storage, err := NewStorage(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("create storage: %w", err)
+	}
+
+	m := &Manager{
 		sources:   make(map[string]*SourceInfo),
 		idCounter: 0,
+		storage:   storage,
 	}
+
+	// 从磁盘加载已持久化的音源
+	if err := m.loadFromDisk(); err != nil {
+		slog.Warn("加载持久化音源失败", "error", err)
+		// 不返回错误，允许继续使用空的音源列表
+	}
+
+	return m, nil
+}
+
+// loadFromDisk 从磁盘加载已持久化的音源
+func (m *Manager) loadFromDisk() error {
+	// 加载索引
+	sources, err := m.storage.LoadIndex()
+	if err != nil {
+		return fmt.Errorf("load index: %w", err)
+	}
+
+	loadedCount := 0
+	for _, info := range sources {
+		// 加载对应的 JS 脚本
+		script, err := m.storage.LoadScript(info.ID)
+		if err != nil {
+			slog.Warn("加载音源脚本失败，跳过", "id", info.ID, "name", info.Name, "error", err)
+			continue
+		}
+
+		info.Script = string(script)
+		m.sources[info.ID] = info
+		loadedCount++
+	}
+
+	if loadedCount > 0 {
+		slog.Info("已从磁盘加载音源", "count", loadedCount)
+	}
+	return nil
 }
 
 // ImportFromJS 导入单个 JS 文件
 // filename: 原始文件名
 // content: JS 文件内容
 func (m *Manager) ImportFromJS(filename string, content []byte) (*SourceInfo, error) {
-	// 1. 解析元数据
+	// 1. 校验 JS 内容
+	if err := ValidateJSContent(content); err != nil {
+		return nil, fmt.Errorf("invalid javascript: %w", err)
+	}
+
+	// 2. 解析元数据
 	metadata, err := ParseMetadata(content)
 	if err != nil {
 		return nil, fmt.Errorf("parse metadata: %w", err)
 	}
 
-	// 2. 如果没有 @name，从文件名推断
+	// 3. 如果没有 @name，从文件名推断
 	name := metadata.Name
 	if name == "" {
 		name = InferNameFromFilename(filename)
 	}
 
-	// 3. 生成唯一 ID
+	// 4. 生成唯一 ID
 	id := m.generateID(name)
 
-	// 4. 创建 SourceInfo
+	// 5. 创建 SourceInfo
 	info := &SourceInfo{
 		ID:          id,
 		Name:        name,
@@ -57,10 +107,24 @@ func (m *Manager) ImportFromJS(filename string, content []byte) (*SourceInfo, er
 		Filename:    filename,
 		Script:      string(content),
 		ImportedAt:  time.Now().Format(time.RFC3339),
+		Enabled:     true, // 导入时默认启用
 	}
 
-	// 5. 存入 map
+	// 6. 存入 map
 	m.sources[id] = info
+
+	// 7. 持久化保存
+	if err := m.storage.SaveScript(id, content); err != nil {
+		// 回滚内存状态
+		delete(m.sources, id)
+		return nil, fmt.Errorf("save script: %w", err)
+	}
+	if err := m.saveIndex(); err != nil {
+		// 回滚：删除脚本文件和内存状态
+		_ = m.storage.DeleteScript(id)
+		delete(m.sources, id)
+		return nil, fmt.Errorf("save index: %w", err)
+	}
 
 	slog.Info("音源导入成功", "id", id, "name", name, "filename", filename)
 	return info, nil
@@ -153,12 +217,93 @@ func (m *Manager) GetSourceScript(id string) (string, error) {
 
 // DeleteSource 删除音源
 func (m *Manager) DeleteSource(id string) error {
-	if _, exists := m.sources[id]; !exists {
+	info, exists := m.sources[id]
+	if !exists {
 		return fmt.Errorf("source not found: %s", id)
 	}
+
+	// 先从内存删除
 	delete(m.sources, id)
+
+	// 持久化：删除脚本文件
+	if err := m.storage.DeleteScript(id); err != nil {
+		slog.Warn("删除脚本文件失败", "id", id, "error", err)
+		// 继续执行，不影响索引更新
+	}
+
+	// 持久化：更新索引
+	if err := m.saveIndex(); err != nil {
+		// 回滚内存状态
+		m.sources[id] = info
+		return fmt.Errorf("save index: %w", err)
+	}
+
 	slog.Info("音源已删除", "id", id)
 	return nil
+}
+
+// EnableSource 启用音源
+func (m *Manager) EnableSource(id string) error {
+	info, exists := m.sources[id]
+	if !exists {
+		return fmt.Errorf("source not found: %s", id)
+	}
+
+	if info.Enabled {
+		return nil // 已经启用，无需操作
+	}
+
+	info.Enabled = true
+
+	if err := m.saveIndex(); err != nil {
+		info.Enabled = false // 回滚
+		return fmt.Errorf("save index: %w", err)
+	}
+
+	slog.Info("音源已启用", "id", id)
+	return nil
+}
+
+// DisableSource 禁用音源
+func (m *Manager) DisableSource(id string) error {
+	info, exists := m.sources[id]
+	if !exists {
+		return fmt.Errorf("source not found: %s", id)
+	}
+
+	if !info.Enabled {
+		return nil // 已经禁用，无需操作
+	}
+
+	info.Enabled = false
+
+	if err := m.saveIndex(); err != nil {
+		info.Enabled = true // 回滚
+		return fmt.Errorf("save index: %w", err)
+	}
+
+	slog.Info("音源已禁用", "id", id)
+	return nil
+}
+
+// GetEnabledSources 返回所有已启用的音源列表
+func (m *Manager) GetEnabledSources() []*SourceInfo {
+	var sources []*SourceInfo
+	for _, info := range m.sources {
+		if info.Enabled {
+			sources = append(sources, info)
+		}
+	}
+	return sources
+}
+
+// saveIndex 保存音源索引到磁盘
+func (m *Manager) saveIndex() error {
+	sources := make([]*SourceInfo, 0, len(m.sources))
+	for _, info := range m.sources {
+		sources = append(sources, info)
+	}
+	return m.storage.SaveIndex(sources)
 }
 
 // Close 清理管理器

@@ -1,42 +1,67 @@
 # mimusic-plugin-lxmusic
 
-MiMusic 洛雪音源管理插件，用于导入和管理洛雪音源，支持歌曲搜索和批量导入到音乐库。本插件基于 [MiMusic](https://github.com/mimusic-org/mimusic) 插件系统开发。
+MiMusic 洛雪音源插件，提供多平台音乐搜索和播放 URL 获取功能。搜索使用原生 Go 实现（musicsdk），播放 URL 通过 JS 音源脚本获取。本插件基于 [MiMusic](https://github.com/mimusic-org/mimusic) 插件系统开发。
 
 ## 功能特性
 
-- 📦 **音源导入**：支持导入 .js 单文件或 .zip 批量导入音源
-- 🔍 **元数据解析**：自动解析音源名称、版本、作者等元数据
-- 🎵 **歌曲搜索**：基于导入的音源搜索网络歌曲
-- 📥 **批量导入**：支持将搜索结果批量导入到 MiMusic 音乐库
-- 🌐 **Web 管理界面**：提供可视化的音源管理和歌曲搜索界面
+- **多平台搜索**：内置各大平台的搜索（无内置音源）
+- **JS 音源管理**：导入洛雪音源脚本（.js / .zip），用于获取播放 URL
+- **持久化运行时**：每个启用的音源维护一个独立的 goja VM 实例，启动时加载，无需每次调用重建
+- **URL 代理映射**：导入歌曲时生成稳定的代理 URL，播放时实时解析获取真实播放地址
+- **音乐缓存**：下载的音频文件缓存到本地，避免重复请求；支持 HEAD 重定向解析、Content-Type 校验和自动重试
+- **音源启停控制**：支持启用/禁用音源，联动 RuntimeManager 加载/卸载
+- **批量导入**：将搜索结果批量导入到 MiMusic 音乐库
+- **Web 管理界面**：可视化的平台搜索、音源管理和歌曲导入界面
 
 ## 技术栈
 
 - **语言**：Go（编译目标为 WASM/WASI）
-- **JS 引擎**：[goja](https://github.com/dop251/goja) JavaScript 运行时
+- **搜索引擎**：原生 Go 实现（musicsdk），直接调用各平台 HTTP API
+- **JS 引擎**：[goja](https://github.com/dop251/goja) JavaScript 运行时（用于音源脚本获取播放 URL）
 - **插件框架**：[mimusic-org/plugin](https://github.com/mimusic-org/plugin)
 - **前端**：原生 HTML + CSS + JavaScript
+
+## 架构概览
+
+```
+搜索流程：用户搜索 → musicsdk 原生调用平台 API → 返回搜索结果
+导入流程：选择歌曲 → 生成 URL hash 映射 → 调用主程序 API 添加歌曲
+播放流程：主程序请求 /music/url/{hash} → 查缓存 → 未命中则 JS 音源获取 URL
+         → HEAD 解析重定向 → GET 下载并缓存 → 返回音频流（失败回退 302 重定向）
+```
 
 ## 项目结构
 
 ```
 mimusic-plugin-lxmusic/
-├── main.go                 # 插件入口，路由注册
-├── handlers/
-│   ├── source.go           # 音源管理 HTTP 处理器
-│   └── search.go           # 搜索和导入 HTTP 处理器
-├── engine/
-│   ├── runtime.go          # JS 运行时管理
-│   ├── lxapi.go            # 洛雪音源 API 实现
+├── main.go                 # 插件入口，初始化和路由注册
+├── musicsdk/               # 原生 Go 搜索实现
+│   ├── types.go            # 公共类型 (SearchResult, SearchItem, QualityInfo)
+│   ├── searcher.go         # Searcher 接口 + Registry 注册表
+│   ├── http.go             # HTTP 客户端封装 (基于 go-plugin-http)
+│   ├── util.go             # 工具函数
+│   └── *_search.go         # 各平台搜索实现
+├── engine/                 # 持久化 JS 运行时
+│   ├── runtime.go          # SourceRuntime 单源持久化 VM
+│   ├── manager.go          # RuntimeManager 多源管理和轮询
+│   ├── lxapi.go            # lx.* API 注入
 │   └── types.go            # 数据类型定义
-├── source/
-│   ├── manager.go          # 音源管理器
-│   ├── parser.go           # 音源解析器
-│   └── types.go            # 音源数据类型
+├── urlmap/                 # URL hash 映射
+│   ├── store.go            # hash→{songInfo, quality, platform} JSON 存储
+│   └── types.go            # 映射类型定义
+├── source/                 # JS 音源管理
+│   ├── manager.go          # 音源生命周期管理 (CRUD + 启用/禁用)
+│   ├── parser.go           # JSDoc 元数据解析、JS 校验
+│   ├── storage.go          # 文件 I/O 与持久化
+│   └── types.go            # 音源数据类型 (含 Enabled 字段)
+├── handlers/
+│   ├── search.go           # 搜索、导入、播放 URL 处理器
+│   ├── cache.go            # 音乐缓存管理（下载、重定向解析、Content-Type 校验）
+│   └── source.go           # 音源管理处理器
 ├── static/
 │   ├── index.html          # 插件页面
-│   ├── css/                # 样式文件
-│   └── js/                 # 前端逻辑
+│   ├── css/style.css       # 样式
+│   └── js/app.js           # 前端逻辑
 ├── go.mod
 ├── go.sum
 ├── Makefile                # 构建脚本
@@ -45,18 +70,32 @@ mimusic-plugin-lxmusic/
 
 ## API 接口
 
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| `GET` | `/lxmusic/api/sources` | 列出所有已导入的音源 |
-| `POST` | `/lxmusic/api/sources/import` | 导入音源文件（.js 或 .zip） |
-| `DELETE` | `/lxmusic/api/sources?id=xxx` | 删除指定音源 |
-| `GET` | `/lxmusic/api/search?keyword=xxx&source_id=xxx&page=1` | 搜索歌曲 |
-| `POST` | `/lxmusic/api/songs/import` | 批量导入歌曲到音乐库 |
-| `POST` | `/lxmusic/api/songs/get-url` | 获取歌曲播放 URL |
+### 搜索和导入
+
+| 方法 | 路径 | 认证 | 描述 |
+|------|------|------|------|
+| `GET` | `/lxmusic/api/platforms` | 是 | 列出内置搜索平台 |
+| `GET` | `/lxmusic/api/search?keyword=xxx&source_id=xx&page=1` | 是 | 搜索歌曲（source_id 通过 platforms 接口获取） |
+| `POST` | `/lxmusic/api/songs/import` | 是 | 批量导入歌曲到音乐库 |
+| `GET` | `/lxmusic/api/music/url/{hash}` | 否 | 获取播放音频（优先返回缓存流，失败回退 302 重定向） |
+
+### 音源管理
+
+| 方法 | 路径 | 认证 | 描述 |
+|------|------|------|------|
+| `GET` | `/lxmusic/api/sources` | 是 | 列出所有已导入的 JS 音源 |
+| `POST` | `/lxmusic/api/sources/import` | 是 | 导入音源文件（.js 或 .zip） |
+| `POST` | `/lxmusic/api/sources/import-url` | 是 | 通过 URL 导入音源 |
+| `DELETE` | `/lxmusic/api/sources?id=xxx` | 是 | 删除指定音源 |
+| `PUT` | `/lxmusic/api/sources/toggle` | 是 | 启用/禁用音源 |
 
 ## 构建
 
 ```bash
+# WASM 编译
+GOOS=wasip1 GOARCH=wasm go build -o lxmusic.wasm .
+
+# 或使用 Makefile
 make build
 ```
 
@@ -75,6 +114,12 @@ make build
 - 若你使用了本项目，将代表你接受以上声明。
 
 > **注意**：本项目仅作为示例项目用于学习研究，请勿用于任何商业或违法用途。如有侵犯到任何人的合法权益，请联系作者，将在第一时间修改删除相关代码。
+
+## 致谢
+
+本项目参考了以下开源项目的代码实现：
+
+- [XCQ0607/lxserver](https://github.com/XCQ0607/lxserver) - 洛雪音乐服务端实现
 
 ## License
 

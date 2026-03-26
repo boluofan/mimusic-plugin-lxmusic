@@ -7,22 +7,28 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 
+	"mimusic-plugin-lxmusic/engine"
 	"mimusic-plugin-lxmusic/source"
 
 	"github.com/mimusic-org/plugin/api/plugin"
+	pluginhttp "github.com/mimusic-org/plugin/pkg/go-plugin-http/http"
 )
 
 // SourceHandler 音源管理处理器
 type SourceHandler struct {
-	manager *source.Manager
+	manager        *source.Manager
+	runtimeManager *engine.RuntimeManager
 }
 
 // NewSourceHandler 创建音源处理器
-func NewSourceHandler(manager *source.Manager) *SourceHandler {
+func NewSourceHandler(manager *source.Manager, runtimeManager *engine.RuntimeManager) *SourceHandler {
 	return &SourceHandler{
-		manager: manager,
+		manager:        manager,
+		runtimeManager: runtimeManager,
 	}
 }
 
@@ -31,7 +37,7 @@ func NewSourceHandler(manager *source.Manager) *SourceHandler {
 func (h *SourceHandler) HandleListSources(req *http.Request) (*plugin.RouterResponse, error) {
 	sources := h.manager.ListSources()
 
-	// 构建响应（不包含 Script 字段）
+	// 构建响应（不包含 Script 字段，包含 Enabled 字段）
 	type SourceItem struct {
 		ID          string `json:"id"`
 		Name        string `json:"name"`
@@ -40,6 +46,7 @@ func (h *SourceHandler) HandleListSources(req *http.Request) (*plugin.RouterResp
 		Author      string `json:"author"`
 		Filename    string `json:"filename"`
 		ImportedAt  string `json:"imported_at"`
+		Enabled     bool   `json:"enabled"`
 	}
 
 	items := make([]SourceItem, 0, len(sources))
@@ -52,6 +59,7 @@ func (h *SourceHandler) HandleListSources(req *http.Request) (*plugin.RouterResp
 			Author:      s.Author,
 			Filename:    s.Filename,
 			ImportedAt:  s.ImportedAt,
+			Enabled:     s.Enabled,
 		})
 	}
 
@@ -93,6 +101,12 @@ func (h *SourceHandler) HandleImportSource(req *http.Request) (*plugin.RouterRes
 			slog.Error("导入 JS 文件失败", "error", err)
 			return plugin.ErrorResponse(http.StatusBadRequest, "导入失败: "+err.Error()), nil
 		}
+		// 如果音源默认启用，自动加载到 RuntimeManager
+		if info.Enabled {
+			if loadErr := h.runtimeManager.LoadSource(info.ID, info.Script); loadErr != nil {
+				slog.Warn("自动加载音源失败", "id", info.ID, "error", loadErr)
+			}
+		}
 		return plugin.SuccessResponse(info), nil
 
 	} else if strings.HasSuffix(strings.ToLower(filename), ".zip") {
@@ -102,11 +116,164 @@ func (h *SourceHandler) HandleImportSource(req *http.Request) (*plugin.RouterRes
 			slog.Error("导入 ZIP 文件失败", "error", err)
 			return plugin.ErrorResponse(http.StatusBadRequest, "导入失败: "+err.Error()), nil
 		}
+		// 对每个导入的音源，如果默认启用，自动加载到 RuntimeManager
+		for _, info := range sources {
+			if info.Enabled {
+				if loadErr := h.runtimeManager.LoadSource(info.ID, info.Script); loadErr != nil {
+					slog.Warn("自动加载音源失败", "id", info.ID, "error", loadErr)
+				}
+			}
+		}
 		return plugin.SuccessResponse(sources), nil
 
 	} else {
 		return plugin.ErrorResponse(http.StatusBadRequest, "不支持的文件格式，请上传 .js 或 .zip 文件"), nil
 	}
+}
+
+// HandleImportSourceFromURL 从 URL 导入音源
+// POST /lxmusic/api/sources/import-url
+func (h *SourceHandler) HandleImportSourceFromURL(req *http.Request) (*plugin.RouterResponse, error) {
+	// 解析请求体
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		slog.Error("解析请求体失败", "error", err)
+		return plugin.ErrorResponse(http.StatusBadRequest, "无效的请求格式: "+err.Error()), nil
+	}
+
+	// 验证 URL 格式
+	if body.URL == "" {
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 url 参数"), nil
+	}
+
+	parsedURL, err := url.Parse(body.URL)
+	if err != nil {
+		return plugin.ErrorResponse(http.StatusBadRequest, "无效的 URL 格式: "+err.Error()), nil
+	}
+
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return plugin.ErrorResponse(http.StatusBadRequest, "URL 必须以 http:// 或 https:// 开头"), nil
+	}
+
+	slog.Info("开始从 URL 下载音源", "url", body.URL)
+
+	// 使用插件 HTTP 客户端下载文件
+	httpReq, err := pluginhttp.NewRequest("GET", body.URL, nil)
+	if err != nil {
+		slog.Error("创建 HTTP 请求失败", "error", err)
+		return plugin.ErrorResponse(http.StatusInternalServerError, "创建请求失败: "+err.Error()), nil
+	}
+
+	// 设置 User-Agent
+	httpReq.Header.Set("User-Agent", "mimusic-plugin-lxmusic/1.0")
+
+	resp, err := pluginhttp.DefaultClient.Do(httpReq)
+	if err != nil {
+		slog.Error("下载文件失败", "error", err)
+		return plugin.ErrorResponse(http.StatusBadGateway, "下载文件失败: "+err.Error()), nil
+	}
+	defer resp.Body.Close()
+
+	// 检查响应状态码
+	if resp.StatusCode != http.StatusOK {
+		slog.Error("下载文件失败", "statusCode", resp.StatusCode)
+		return plugin.ErrorResponse(http.StatusBadGateway, "下载失败，远程服务器返回状态码: "+http.StatusText(resp.StatusCode)), nil
+	}
+
+	// 读取响应内容
+	content, err := io.ReadAll(resp.Body)
+	if err != nil {
+		slog.Error("读取响应内容失败", "error", err)
+		return plugin.ErrorResponse(http.StatusInternalServerError, "读取文件内容失败: "+err.Error()), nil
+	}
+
+	// 从 URL 路径提取文件名
+	filename := path.Base(parsedURL.Path)
+	if filename == "" || filename == "." || filename == "/" {
+		filename = "source.js"
+	}
+	// 确保文件名以 .js 结尾
+	if !strings.HasSuffix(strings.ToLower(filename), ".js") {
+		filename += ".js"
+	}
+
+	slog.Info("下载完成", "filename", filename, "size", len(content))
+
+	// 复用现有的导入逻辑
+	info, err := h.manager.ImportFromJS(filename, content)
+	if err != nil {
+		slog.Error("导入 JS 文件失败", "error", err)
+		return plugin.ErrorResponse(http.StatusBadRequest, "导入失败: "+err.Error()), nil
+	}
+
+	// 如果音源默认启用，自动加载到 RuntimeManager
+	if info.Enabled {
+		if err := h.runtimeManager.LoadSource(info.ID, info.Script); err != nil {
+			slog.Warn("自动加载音源失败", "id", info.ID, "error", err)
+			// 不影响导入结果，继续返回成功
+		}
+	}
+
+	return plugin.SuccessResponse(info), nil
+}
+
+// HandleToggleSource 启用/禁用音源
+// PUT /lxmusic/api/sources/toggle
+func (h *SourceHandler) HandleToggleSource(req *http.Request) (*plugin.RouterResponse, error) {
+	var body struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		return plugin.ErrorResponse(http.StatusBadRequest, "无效的请求格式: "+err.Error()), nil
+	}
+
+	if body.ID == "" {
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 id 参数"), nil
+	}
+
+	if body.Enabled {
+		// 启用音源
+		if err := h.manager.EnableSource(body.ID); err != nil {
+			return plugin.ErrorResponse(http.StatusNotFound, "启用音源失败: "+err.Error()), nil
+		}
+
+		// 加载到 RuntimeManager
+		script, err := h.manager.GetSourceScript(body.ID)
+		if err != nil {
+			return plugin.ErrorResponse(http.StatusInternalServerError, "获取音源脚本失败: "+err.Error()), nil
+		}
+		if err := h.runtimeManager.LoadSource(body.ID, script); err != nil {
+			// 加载失败，回滚启用状态
+			_ = h.manager.DisableSource(body.ID)
+			return plugin.ErrorResponse(http.StatusInternalServerError, "加载音源失败: "+err.Error()), nil
+		}
+
+		slog.Info("音源已启用并加载", "id", body.ID)
+	} else {
+		// 禁用音源
+		if err := h.manager.DisableSource(body.ID); err != nil {
+			return plugin.ErrorResponse(http.StatusNotFound, "禁用音源失败: "+err.Error()), nil
+		}
+
+		// 从 RuntimeManager 卸载
+		h.runtimeManager.UnloadSource(body.ID)
+
+		slog.Info("音源已禁用并卸载", "id", body.ID)
+	}
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "操作成功",
+	}
+	rspBody, _ := json.Marshal(response)
+	return &plugin.RouterResponse{
+		StatusCode: http.StatusOK,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Body:       rspBody,
+	}, nil
 }
 
 // HandleDeleteSource 删除音源
@@ -117,6 +284,9 @@ func (h *SourceHandler) HandleDeleteSource(req *http.Request) (*plugin.RouterRes
 	if id == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 id 参数"), nil
 	}
+
+	// 删除前先从 RuntimeManager 卸载
+	h.runtimeManager.UnloadSource(id)
 
 	if err := h.manager.DeleteSource(id); err != nil {
 		slog.Error("删除音源失败", "id", id, "error", err)

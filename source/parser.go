@@ -4,12 +4,38 @@
 package source
 
 import (
+	"errors"
 	"regexp"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/dop251/goja"
 )
 
+// ValidateJSContent 验证 JS 文件内容是否合法
+// 检查内容不为空、是合法 UTF-8、能被 goja 编译
+func ValidateJSContent(content []byte) error {
+	// 检查内容不为空
+	if len(content) == 0 {
+		return errors.New("empty content")
+	}
+
+	// 检查是否为合法 UTF-8 文本
+	if !utf8.Valid(content) {
+		return errors.New("content is not valid UTF-8")
+	}
+
+	// 尝试使用 goja 编译，验证是否为合法 JavaScript
+	_, err := goja.Compile("", string(content), false)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // jsdocPattern 匹配 JSDoc 注释块 (/** ... */)
-var jsdocPattern = regexp.MustCompile(`(?s)/\*\*[\s\S]*?\*/`)
+var jsdocPattern = regexp.MustCompile(`(?s)/\*[!*][\s\S]*?\*/`)
 
 // tagPatterns 各标签的正则表达式
 var tagPatterns = map[string]*regexp.Regexp{
@@ -17,6 +43,7 @@ var tagPatterns = map[string]*regexp.Regexp{
 	"version":     regexp.MustCompile(`@version\s+(.+)`),
 	"description": regexp.MustCompile(`@description\s+(.+)`),
 	"author":      regexp.MustCompile(`@author\s+(.+)`),
+	"homepage":    regexp.MustCompile(`@homepage\s+(.+)`),
 }
 
 // ParseMetadata 解析 JS 文件头部的 JSDoc 注释块，提取元数据
@@ -44,6 +71,8 @@ func ParseMetadata(content []byte) (*SourceMetadata, error) {
 				metadata.Description = value
 			case "author":
 				metadata.Author = value
+			case "homepage":
+				metadata.Homepage = value
 			}
 		}
 	}

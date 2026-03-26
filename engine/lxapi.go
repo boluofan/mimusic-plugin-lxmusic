@@ -4,9 +4,16 @@
 package engine
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/md5"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
@@ -53,7 +60,7 @@ func (l *LxAPI) CallEventHandler(event string, args ...interface{}) (goja.Value,
 }
 
 // InjectLxAPI 注入 globalThis.lx 对象到 goja 运行时
-func (l *LxAPI) InjectLxAPI() error {
+func (l *LxAPI) InjectLxAPI(scriptInfo *ScriptInfo) error {
 	// 创建 lx 对象
 	lxObj := l.vm.NewObject()
 
@@ -65,6 +72,20 @@ func (l *LxAPI) InjectLxAPI() error {
 	// lx.env
 	if err := lxObj.Set("env", "desktop"); err != nil {
 		return fmt.Errorf("set lx.env: %w", err)
+	}
+
+	// lx.currentScriptInfo - 注入脚本元数据
+	if scriptInfo != nil {
+		scriptInfoObj := l.vm.NewObject()
+		_ = scriptInfoObj.Set("name", scriptInfo.Name)
+		_ = scriptInfoObj.Set("description", scriptInfo.Description)
+		_ = scriptInfoObj.Set("version", scriptInfo.Version)
+		_ = scriptInfoObj.Set("author", scriptInfo.Author)
+		_ = scriptInfoObj.Set("homepage", scriptInfo.Homepage)
+		_ = scriptInfoObj.Set("rawScript", scriptInfo.RawScript)
+		if err := lxObj.Set("currentScriptInfo", scriptInfoObj); err != nil {
+			return fmt.Errorf("set lx.currentScriptInfo: %w", err)
+		}
 	}
 
 	// lx.EVENT_NAMES
@@ -178,45 +199,80 @@ func (l *LxAPI) handleInitedEvent(data interface{}) {
 }
 
 // createRequestFunc 创建 lx.request 函数
+// 支持两种调用方式：
+//  1. lx.request(url, options, callback) — 回调风格
+//  2. lx.request(url, options) — Promise 风格，返回 Promise<response>
 func (l *LxAPI) createRequestFunc() func(goja.FunctionCall) goja.Value {
 	return func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) < 3 {
-			slog.Warn("lx.request: 参数不足")
+		if len(call.Arguments) < 2 {
+			slog.Warn("lx.request: 参数不足，至少需要 url 和 options")
 			return goja.Undefined()
 		}
 
 		url := call.Argument(0).String()
 		optionsVal := call.Argument(1).Export()
-		callbackVal := call.Argument(2)
 
-		callback, ok := goja.AssertFunction(callbackVal)
-		if !ok {
-			slog.Warn("lx.request: 第三个参数不是函数")
-			return goja.Undefined()
+		// 判断是否有回调参数（兼容回调风格）
+		var callback goja.Callable
+		var usePromise bool
+		if len(call.Arguments) >= 3 {
+			if cb, ok := goja.AssertFunction(call.Argument(2)); ok {
+				callback = cb
+			} else {
+				usePromise = true
+			}
+		} else {
+			usePromise = true
 		}
 
 		// 解析 options
 		options := l.parseHTTPOptions(optionsVal)
 
-		slog.Debug("lx.request: 发起请求", "url", url, "method", options.Method)
+		slog.Debug("lx.request: 发起请求", "url", url, "method", options.Method, "promise", usePromise)
+
+		// 构建响应对象的辅助函数
+		buildResponseObj := func(resp *HTTPResponse) goja.Value {
+			respObj := l.vm.NewObject()
+			_ = respObj.Set("statusCode", resp.StatusCode)
+			_ = respObj.Set("headers", resp.Headers)
+			var jsonBody interface{}
+			if jsonErr := json.Unmarshal([]byte(resp.Body), &jsonBody); jsonErr == nil {
+				slog.Debug("lx.request: 响应体 JSON 解析成功")
+				_ = respObj.Set("body", jsonBody)
+			} else {
+				slog.Debug("lx.request: 响应体 JSON 解析失败，保留原始字符串", "error", jsonErr)
+				_ = respObj.Set("body", resp.Body)
+			}
+			return l.vm.ToValue(respObj)
+		}
 
 		// 执行 HTTP 请求
 		resp, err := l.doHTTPRequest(url, options)
+
+		if usePromise {
+			// Promise 模式
+			promise, resolve, reject := l.vm.NewPromise()
+			if err != nil {
+				slog.Info("lx.request: 请求失败(Promise)", "url", url, "error", err)
+				reject(l.vm.NewGoError(err))
+			} else {
+				slog.Info("lx.request: 请求完成(Promise)", "url", url, "statusCode", resp.StatusCode, "bodyLen", len(resp.Body))
+				resolve(buildResponseObj(resp))
+			}
+			return l.vm.ToValue(promise)
+		}
+
+		// 回调模式
 		if err != nil {
-			// 调用回调，传递错误
+			slog.Info("lx.request: 请求失败(Callback)", "url", url, "error", err)
 			errObj := l.vm.NewObject()
 			_ = errObj.Set("message", err.Error())
 			_, _ = callback(goja.Undefined(), l.vm.ToValue(errObj), goja.Null(), goja.Null())
 			return goja.Undefined()
 		}
 
-		// 调用回调，传递响应
-		respObj := l.vm.NewObject()
-		_ = respObj.Set("statusCode", resp.StatusCode)
-		_ = respObj.Set("headers", resp.Headers)
-		_ = respObj.Set("body", resp.Body)
-
-		_, _ = callback(goja.Undefined(), goja.Null(), l.vm.ToValue(respObj), l.vm.ToValue(resp.Body))
+		slog.Info("lx.request: 请求完成(Callback)", "url", url, "statusCode", resp.StatusCode, "bodyLen", len(resp.Body))
+		_, _ = callback(goja.Undefined(), goja.Null(), buildResponseObj(resp), l.vm.ToValue(resp.Body))
 		return goja.Undefined()
 	}
 }
@@ -318,6 +374,9 @@ func (l *LxAPI) setupUtils(utils *goja.Object) error {
 	if err := buffer.Set("from", l.createBufferFromFunc()); err != nil {
 		return err
 	}
+	if err := buffer.Set("bufToString", l.createBufToStringFunc()); err != nil {
+		return err
+	}
 	if err := utils.Set("buffer", buffer); err != nil {
 		return err
 	}
@@ -325,6 +384,18 @@ func (l *LxAPI) setupUtils(utils *goja.Object) error {
 	// lx.utils.crypto
 	crypto := l.vm.NewObject()
 	if err := crypto.Set("md5", l.createMD5Func()); err != nil {
+		return err
+	}
+	if err := crypto.Set("aesEncrypt", l.createAESEncryptFunc()); err != nil {
+		return err
+	}
+	if err := crypto.Set("aesDecrypt", l.createAESDecryptFunc()); err != nil {
+		return err
+	}
+	if err := crypto.Set("rsaEncrypt", l.createRSAEncryptFunc()); err != nil {
+		return err
+	}
+	if err := crypto.Set("randomBytes", l.createRandomBytesFunc()); err != nil {
 		return err
 	}
 	if err := utils.Set("crypto", crypto); err != nil {
@@ -370,4 +441,248 @@ func (l *LxAPI) createMD5Func() func(goja.FunctionCall) goja.Value {
 		hash := md5.Sum([]byte(str))
 		return l.vm.ToValue(hex.EncodeToString(hash[:]))
 	}
+}
+
+// createBufToStringFunc 创建 lx.utils.buffer.bufToString 函数
+func (l *LxAPI) createBufToStringFunc() func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 1 {
+			return goja.Undefined()
+		}
+
+		bufArg := call.Argument(0)
+		format := "utf8"
+		if len(call.Arguments) > 1 {
+			format = call.Argument(1).String()
+		}
+
+		// 尝试从 buffer 对象获取数据
+		var data []byte
+		switch v := bufArg.Export().(type) {
+		case string:
+			data = []byte(v)
+		case []byte:
+			data = v
+		case map[string]interface{}:
+			if d, ok := v["data"].(string); ok {
+				data = []byte(d)
+			} else if d, ok := v["data"].([]byte); ok {
+				data = d
+			}
+		default:
+			return l.vm.ToValue("")
+		}
+
+		switch format {
+		case "hex":
+			return l.vm.ToValue(hex.EncodeToString(data))
+		case "base64":
+			return l.vm.ToValue(base64.StdEncoding.EncodeToString(data))
+		default: // "utf8"
+			return l.vm.ToValue(string(data))
+		}
+	}
+}
+
+// createAESEncryptFunc 创建 lx.utils.crypto.aesEncrypt 函数
+// aesEncrypt(buffer, mode, key, iv)
+func (l *LxAPI) createAESEncryptFunc() func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 4 {
+			slog.Warn("aesEncrypt: 参数不足")
+			return goja.Undefined()
+		}
+
+		data := l.extractBytes(call.Argument(0))
+		// mode := call.Argument(1).String() // e.g., "aes-128-cbc"
+		key := l.extractBytes(call.Argument(2))
+		iv := l.extractBytes(call.Argument(3))
+
+		if len(key) == 0 || len(iv) == 0 {
+			slog.Warn("aesEncrypt: key 或 iv 为空")
+			return goja.Undefined()
+		}
+
+		// 创建 AES cipher
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			slog.Warn("aesEncrypt: 创建 cipher 失败", "error", err)
+			return goja.Undefined()
+		}
+
+		// PKCS7 padding
+		blockSize := block.BlockSize()
+		padding := blockSize - len(data)%blockSize
+		padText := make([]byte, padding)
+		for i := range padText {
+			padText[i] = byte(padding)
+		}
+		data = append(data, padText...)
+
+		// CBC 加密
+		encrypted := make([]byte, len(data))
+		mode := cipher.NewCBCEncrypter(block, iv)
+		mode.CryptBlocks(encrypted, data)
+
+		// 返回 buffer 对象
+		return l.createBufferObject(encrypted)
+	}
+}
+
+// createAESDecryptFunc 创建 lx.utils.crypto.aesDecrypt 函数
+// aesDecrypt(buffer, mode, key, iv)
+func (l *LxAPI) createAESDecryptFunc() func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 4 {
+			slog.Warn("aesDecrypt: 参数不足")
+			return goja.Undefined()
+		}
+
+		data := l.extractBytes(call.Argument(0))
+		// mode := call.Argument(1).String() // e.g., "aes-128-cbc"
+		key := l.extractBytes(call.Argument(2))
+		iv := l.extractBytes(call.Argument(3))
+
+		if len(key) == 0 || len(iv) == 0 || len(data) == 0 {
+			slog.Warn("aesDecrypt: key、iv 或 data 为空")
+			return goja.Undefined()
+		}
+
+		// 创建 AES cipher
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			slog.Warn("aesDecrypt: 创建 cipher 失败", "error", err)
+			return goja.Undefined()
+		}
+
+		// CBC 解密
+		if len(data)%block.BlockSize() != 0 {
+			slog.Warn("aesDecrypt: 数据长度不是块大小的倍数")
+			return goja.Undefined()
+		}
+
+		decrypted := make([]byte, len(data))
+		mode := cipher.NewCBCDecrypter(block, iv)
+		mode.CryptBlocks(decrypted, data)
+
+		// PKCS7 unpadding
+		if len(decrypted) > 0 {
+			padding := int(decrypted[len(decrypted)-1])
+			if padding > 0 && padding <= block.BlockSize() && padding <= len(decrypted) {
+				decrypted = decrypted[:len(decrypted)-padding]
+			}
+		}
+
+		// 返回 buffer 对象
+		return l.createBufferObject(decrypted)
+	}
+}
+
+// createRSAEncryptFunc 创建 lx.utils.crypto.rsaEncrypt 函数
+// rsaEncrypt(buffer, key)
+func (l *LxAPI) createRSAEncryptFunc() func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 2 {
+			slog.Warn("rsaEncrypt: 参数不足")
+			return goja.Undefined()
+		}
+
+		data := l.extractBytes(call.Argument(0))
+		keyStr := call.Argument(1).String()
+
+		// 解析 PEM 格式的公钥
+		block, _ := pem.Decode([]byte(keyStr))
+		if block == nil {
+			slog.Warn("rsaEncrypt: 无法解析 PEM 格式的密钥")
+			return goja.Undefined()
+		}
+
+		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			// 尝试解析为 PKCS1 格式
+			pub, err = x509.ParsePKCS1PublicKey(block.Bytes)
+			if err != nil {
+				slog.Warn("rsaEncrypt: 解析公钥失败", "error", err)
+				return goja.Undefined()
+			}
+		}
+
+		rsaPub, ok := pub.(*rsa.PublicKey)
+		if !ok {
+			slog.Warn("rsaEncrypt: 不是 RSA 公钥")
+			return goja.Undefined()
+		}
+
+		// RSA PKCS1v15 加密
+		encrypted, err := rsa.EncryptPKCS1v15(rand.Reader, rsaPub, data)
+		if err != nil {
+			slog.Warn("rsaEncrypt: 加密失败", "error", err)
+			return goja.Undefined()
+		}
+
+		return l.createBufferObject(encrypted)
+	}
+}
+
+// createRandomBytesFunc 创建 lx.utils.crypto.randomBytes 函数
+// randomBytes(size) -> 返回十六进制字符串
+func (l *LxAPI) createRandomBytesFunc() func(goja.FunctionCall) goja.Value {
+	return func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 1 {
+			return goja.Undefined()
+		}
+
+		size := int(call.Argument(0).ToInteger())
+		if size <= 0 {
+			return l.vm.ToValue("")
+		}
+
+		bytes := make([]byte, size)
+		_, err := rand.Read(bytes)
+		if err != nil {
+			slog.Warn("randomBytes: 生成随机字节失败", "error", err)
+			return goja.Undefined()
+		}
+
+		return l.vm.ToValue(hex.EncodeToString(bytes))
+	}
+}
+
+// extractBytes 从 goja.Value 提取字节数据
+func (l *LxAPI) extractBytes(val goja.Value) []byte {
+	switch v := val.Export().(type) {
+	case string:
+		return []byte(v)
+	case []byte:
+		return v
+	case map[string]interface{}:
+		if data, ok := v["data"].(string); ok {
+			return []byte(data)
+		}
+		if data, ok := v["data"].([]byte); ok {
+			return data
+		}
+	}
+	return nil
+}
+
+// createBufferObject 创建 buffer 对象
+func (l *LxAPI) createBufferObject(data []byte) goja.Value {
+	bufObj := l.vm.NewObject()
+	_ = bufObj.Set("data", data)
+	_ = bufObj.Set("toString", func(call goja.FunctionCall) goja.Value {
+		format := "utf8"
+		if len(call.Arguments) > 0 {
+			format = call.Argument(0).String()
+		}
+		switch format {
+		case "hex":
+			return l.vm.ToValue(hex.EncodeToString(data))
+		case "base64":
+			return l.vm.ToValue(base64.StdEncoding.EncodeToString(data))
+		default:
+			return l.vm.ToValue(string(data))
+		}
+	})
+	return bufObj
 }

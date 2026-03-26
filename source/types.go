@@ -11,9 +11,11 @@ type SourceInfo struct {
 	Version     string `json:"version"`     // 从 JSDoc @version 解析
 	Description string `json:"description"` // 从 JSDoc @description 解析
 	Author      string `json:"author"`      // 从 JSDoc @author 解析
+	Homepage    string `json:"homepage"`    // 从 JSDoc @homepage 解析
 	Filename    string `json:"filename"`    // 原始文件名
 	Script      string `json:"-"`           // JS 源码（不序列化到 JSON 响应）
 	ImportedAt  string `json:"imported_at"` // 导入时间
+	Enabled     bool   `json:"enabled"`     // 是否启用
 }
 
 // SourceMetadata 从 JS 文件头部 JSDoc 解析的元数据
@@ -22,4 +24,11 @@ type SourceMetadata struct {
 	Version     string // @version
 	Description string // @description
 	Author      string // @author
+	Homepage    string // @homepage
+}
+
+// SourceIndex 音源索引（用于持久化）
+type SourceIndex struct {
+	Version string        `json:"version"`
+	Sources []*SourceInfo `json:"sources"`
 }

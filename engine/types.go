@@ -3,24 +3,6 @@
 // Package engine 封装 goja JS 运行时，用于执行洛雪音源脚本。
 package engine
 
-// SearchResult 搜索结果
-type SearchResult struct {
-	List   []SearchItem `json:"list"`
-	Total  int          `json:"total"`
-	Source string       `json:"source"` // 来源平台标识
-}
-
-// SearchItem 搜索结果条目
-type SearchItem struct {
-	Name     string `json:"name"`     // 歌曲名
-	Singer   string `json:"singer"`   // 歌手
-	Album    string `json:"album"`    // 专辑
-	Duration int    `json:"duration"` // 时长（秒）
-	Source   string `json:"source"`   // 来源平台
-	MusicID  string `json:"music_id"` // 平台歌曲ID
-	Img      string `json:"img"`      // 封面图URL
-}
-
 // SourceConfig 从 JS inited 事件解析的音源配置
 type SourceConfig struct {
 	Sources map[string]SourceEntry `json:"sources"`
@@ -63,4 +45,14 @@ type HTTPResponse struct {
 	StatusCode int               `json:"statusCode"`
 	Headers    map[string]string `json:"headers"`
 	Body       string            `json:"body"`
+}
+
+// ScriptInfo 脚本元数据，用于 lx.currentScriptInfo 注入
+type ScriptInfo struct {
+	Name        string // 音源名称
+	Description string // 描述
+	Version     string // 版本
+	Author      string // 作者
+	Homepage    string // 主页
+	RawScript   string // 原始脚本内容
 }

@@ -9,25 +9,14 @@
 <body>
     <div class="container">
         <h1>🎵 洛雪音源</h1>
-        <p class="description">导入洛雪音源脚本，搜索和导入网络歌曲</p>
-        
-        <!-- 音源管理区域 -->
-        <div class="section">
-            <h2>音源管理</h2>
-            <div class="source-controls">
-                <input type="file" id="sourceFile" accept=".js,.zip" style="display:none">
-                <button id="importBtn" class="btn btn-primary">导入音源</button>
-                <span class="hint">支持 .js 和 .zip 格式</span>
-            </div>
-            <div id="sourceList" class="source-list"></div>
-        </div>
+        <p class="description">搜索并导入网络歌曲，使用 JS 音源获取播放链接</p>
         
         <!-- 搜索区域 -->
         <div class="section">
             <h2>歌曲搜索</h2>
             <div class="search-controls">
-                <select id="sourceSelect" class="select">
-                    <option value="">请先导入音源</option>
+                <select id="platformSelect" class="select">
+                    <option value="">加载平台中...</option>
                 </select>
                 <input type="text" id="keyword" class="input" placeholder="输入歌曲名或歌手名...">
                 <button id="searchBtn" class="btn btn-primary" disabled>搜索</button>
@@ -39,6 +28,11 @@
             <h2>搜索结果 <span id="resultCount"></span></h2>
             <div class="result-controls">
                 <label class="checkbox-label"><input type="checkbox" id="selectAll"> 全选</label>
+                <select id="qualitySelect" class="select select-small">
+                    <option value="128k">128k</option>
+                    <option value="320k" selected>320k</option>
+                    <option value="flac">FLAC</option>
+                </select>
                 <button id="importSongsBtn" class="btn btn-success" disabled>导入选中歌曲</button>
                 <span id="selectedCount" class="selected-count">已选 0 首</span>
             </div>
@@ -54,6 +48,22 @@
             </div>
             <div class="progress-text" id="progressText">准备中...</div>
             <div id="importResults" class="import-results"></div>
+        </div>
+        
+        <!-- 音源管理区域 -->
+        <div class="section">
+            <h2>音源管理（播放URL）</h2>
+            <p class="section-desc">JS 音源用于获取歌曲的播放链接，启用的音源将被用来解析播放 URL</p>
+            <div class="source-controls">
+                <input type="file" id="sourceFile" accept=".js,.zip" style="display:none">
+                <button id="importBtn" class="btn btn-primary">导入音源</button>
+                <span class="hint">支持 .js 和 .zip 格式</span>
+            </div>
+            <div class="source-controls" style="margin-top: 10px;">
+                <input type="text" id="sourceUrl" class="input" placeholder="输入音源 JS 文件 URL" style="flex: 1; min-width: 200px;">
+                <button id="importUrlBtn" class="btn btn-primary">从 URL 导入</button>
+            </div>
+            <div id="sourceList" class="source-list"></div>
         </div>
         
         <!-- Toast 消息 -->

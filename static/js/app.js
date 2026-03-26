@@ -3,10 +3,11 @@ const API_BASE = '/api/v1/plugin/lxmusic/api';
 
 // 当前状态
 let currentSources = [];
+let currentPlatforms = [];
 let searchResults = [];
 let currentPage = 1;
 let totalResults = 0;
-let currentSourceId = '';
+let currentPlatformId = '';
 let currentKeyword = '';
 
 /**
@@ -73,6 +74,50 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// ============ 平台管理 ============
+
+/**
+ * 加载内置平台列表
+ */
+async function loadPlatforms() {
+    try {
+        const response = await fetch(`${API_BASE}/platforms`, {
+            headers: getAuthHeaders()
+        });
+        const result = await response.json();
+        
+        if (result.code === 0) {
+            currentPlatforms = result.data || [];
+            updatePlatformSelect();
+        } else {
+            showToast('加载平台列表失败: ' + (result.msg || '未知错误'), 'error');
+        }
+    } catch (error) {
+        console.error('加载平台列表失败:', error);
+        showToast('加载平台列表失败: ' + error.message, 'error');
+    }
+}
+
+/**
+ * 更新平台下拉选择
+ */
+function updatePlatformSelect() {
+    const select = document.getElementById('platformSelect');
+    const searchBtn = document.getElementById('searchBtn');
+    
+    if (currentPlatforms.length === 0) {
+        select.innerHTML = '<option value="">暂无可用平台</option>';
+        searchBtn.disabled = true;
+    } else {
+        let html = '';
+        for (const platform of currentPlatforms) {
+            html += `<option value="${escapeHtml(platform.id)}">${escapeHtml(platform.name)}</option>`;
+        }
+        select.innerHTML = html;
+        searchBtn.disabled = false;
+    }
+}
+
 // ============ 音源管理 ============
 
 /**
@@ -88,7 +133,6 @@ async function loadSources() {
         if (result.success) {
             currentSources = result.data || [];
             renderSources();
-            updateSourceSelect();
         } else {
             showToast('加载音源失败: ' + (result.message || result.error || '未知错误'), 'error');
         }
@@ -105,12 +149,13 @@ function renderSources() {
     const container = document.getElementById('sourceList');
     
     if (currentSources.length === 0) {
-        container.innerHTML = '<div class="empty-state"><div class="icon">📦</div><div>暂无音源，请导入音源脚本</div></div>';
+        container.innerHTML = '<div class="empty-state"><div class="icon">📦</div><div>暂无音源，请导入音源脚本以获取播放 URL</div></div>';
         return;
     }
     
     let html = '';
     for (const source of currentSources) {
+        const checkedAttr = source.enabled ? 'checked' : '';
         html += `
             <div class="source-item" data-id="${escapeHtml(source.id)}">
                 <div class="source-info">
@@ -122,6 +167,10 @@ function renderSources() {
                     </div>
                 </div>
                 <div class="source-actions">
+                    <label class="toggle-switch" title="${source.enabled ? '已启用' : '已禁用'}">
+                        <input type="checkbox" ${checkedAttr} onchange="toggleSource('${escapeHtml(source.id)}', this.checked)">
+                        <span class="toggle-slider"></span>
+                    </label>
                     <button class="btn btn-danger btn-small" onclick="deleteSource('${escapeHtml(source.id)}')">删除</button>
                 </div>
             </div>
@@ -131,22 +180,34 @@ function renderSources() {
 }
 
 /**
- * 更新音源下拉选择
+ * 切换音源启用/禁用状态
  */
-function updateSourceSelect() {
-    const select = document.getElementById('sourceSelect');
-    const searchBtn = document.getElementById('searchBtn');
-    
-    if (currentSources.length === 0) {
-        select.innerHTML = '<option value="">请先导入音源</option>';
-        searchBtn.disabled = true;
-    } else {
-        let html = '<option value="">请选择音源</option>';
-        for (const source of currentSources) {
-            html += `<option value="${escapeHtml(source.id)}">${escapeHtml(source.name)}</option>`;
+async function toggleSource(id, enabled) {
+    try {
+        const response = await fetch(`${API_BASE}/sources/toggle`, {
+            method: 'PUT',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ id: id, enabled: enabled })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            showToast(enabled ? '音源已启用' : '音源已禁用', 'success');
+            // 更新本地状态
+            const source = currentSources.find(s => s.id === id);
+            if (source) {
+                source.enabled = enabled;
+            }
+        } else {
+            showToast('操作失败: ' + (result.message || result.error || '未知错误'), 'error');
+            // 恢复 checkbox 状态
+            loadSources();
         }
-        select.innerHTML = html;
-        searchBtn.disabled = false;
+    } catch (error) {
+        console.error('切换音源状态失败:', error);
+        showToast('操作失败: ' + error.message, 'error');
+        // 恢复 checkbox 状态
+        loadSources();
     }
 }
 
@@ -186,6 +247,44 @@ async function importSource(file) {
 }
 
 /**
+ * 从 URL 导入音源
+ */
+async function importSourceFromURL(url) {
+    if (!url || !url.trim()) {
+        showToast('请输入音源 URL', 'warning');
+        return;
+    }
+    
+    // 验证 URL 格式
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        showToast('URL 必须以 http:// 或 https:// 开头', 'warning');
+        return;
+    }
+    
+    try {
+        showToast('正在从 URL 导入...', 'info');
+        
+        const response = await fetch(`${API_BASE}/sources/import-url`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify({ url: url.trim() })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            showToast('导入成功', 'success');
+            document.getElementById('sourceUrl').value = ''; // 清空输入框
+            loadSources();
+        } else {
+            showToast('导入失败: ' + (result.message || result.error || '未知错误'), 'error');
+        }
+    } catch (error) {
+        console.error('从 URL 导入音源失败:', error);
+        showToast('导入失败: ' + error.message, 'error');
+    }
+}
+
+/**
  * 删除音源
  */
 async function deleteSource(id) {
@@ -217,19 +316,19 @@ async function deleteSource(id) {
 /**
  * 搜索歌曲
  */
-async function search(keyword, sourceId, page = 1) {
+async function search(keyword, platformId, page = 1) {
     if (!keyword.trim()) {
         showToast('请输入搜索关键词', 'warning');
         return;
     }
     
-    if (!sourceId) {
-        showToast('请选择音源', 'warning');
+    if (!platformId) {
+        showToast('请选择平台', 'warning');
         return;
     }
     
     currentKeyword = keyword;
-    currentSourceId = sourceId;
+    currentPlatformId = platformId;
     currentPage = page;
     
     const searchBtn = document.getElementById('searchBtn');
@@ -239,7 +338,7 @@ async function search(keyword, sourceId, page = 1) {
     try {
         const params = new URLSearchParams({
             keyword: keyword,
-            source_id: sourceId,
+            source_id: platformId,
             page: page
         });
         
@@ -248,13 +347,13 @@ async function search(keyword, sourceId, page = 1) {
         });
         const result = await response.json();
         
-        if (result.success) {
+        if (result.code === 0) {
             searchResults = result.data.list || [];
             totalResults = result.data.total || 0;
             renderResults();
             document.getElementById('resultSection').style.display = 'block';
         } else {
-            showToast('搜索失败: ' + (result.message || result.error || '未知错误'), 'error');
+            showToast('搜索失败: ' + (result.msg || '未知错误'), 'error');
         }
     } catch (error) {
         console.error('搜索失败:', error);
@@ -316,9 +415,9 @@ function renderPagination() {
     }
     
     let html = `
-        <button ${currentPage <= 1 ? 'disabled' : ''} onclick="search('${escapeHtml(currentKeyword)}', '${escapeHtml(currentSourceId)}', ${currentPage - 1})">上一页</button>
+        <button ${currentPage <= 1 ? 'disabled' : ''} onclick="search('${escapeHtml(currentKeyword)}', '${escapeHtml(currentPlatformId)}', ${currentPage - 1})">上一页</button>
         <span class="page-info">第 ${currentPage} / ${totalPages} 页</span>
-        <button ${currentPage >= totalPages ? 'disabled' : ''} onclick="search('${escapeHtml(currentKeyword)}', '${escapeHtml(currentSourceId)}', ${currentPage + 1})">下一页</button>
+        <button ${currentPage >= totalPages ? 'disabled' : ''} onclick="search('${escapeHtml(currentKeyword)}', '${escapeHtml(currentPlatformId)}', ${currentPage + 1})">下一页</button>
     `;
     container.innerHTML = html;
 }
@@ -355,6 +454,9 @@ async function importSelectedSongs() {
         return;
     }
     
+    // 获取选择的音质
+    const quality = document.getElementById('qualitySelect').value;
+    
     const songs = [];
     checkboxes.forEach(cb => {
         const index = parseInt(cb.dataset.index);
@@ -365,8 +467,14 @@ async function importSelectedSongs() {
             album: song.album,
             source: song.source,
             music_id: song.music_id,
-            quality: '320k',
-            img: song.img
+            img: song.img,
+            // 平台特有字段
+            hash: song.hash,
+            songmid: song.songmid,
+            strMediaMid: song.strMediaMid,
+            albumMid: song.albumMid,
+            copyrightId: song.copyrightId,
+            albumId: song.albumId
         });
     });
     
@@ -391,13 +499,13 @@ async function importSelectedSongs() {
             method: 'POST',
             headers: getAuthHeaders(),
             body: JSON.stringify({
-                source_id: currentSourceId,
-                songs: songs
+                songs: songs,
+                quality: quality
             })
         });
         const result = await response.json();
         
-        if (result.success) {
+        if (result.code === 0) {
             const data = result.data;
             progressFill.style.width = '100%';
             progressText.textContent = `导入完成: 成功 ${data.success} 首, 失败 ${data.failed} 首`;
@@ -420,8 +528,8 @@ async function importSelectedSongs() {
                 showToast(`${data.failed} 首歌曲导入失败`, 'error');
             }
         } else {
-            progressText.textContent = '导入失败: ' + (result.message || result.error || '未知错误');
-            showToast('导入失败: ' + (result.message || result.error || '未知错误'), 'error');
+            progressText.textContent = '导入失败: ' + (result.msg || '未知错误');
+            showToast('导入失败: ' + (result.msg || '未知错误'), 'error');
         }
     } catch (error) {
         console.error('导入失败:', error);
@@ -437,6 +545,9 @@ async function importSelectedSongs() {
 // ============ 初始化 ============
 
 document.addEventListener('DOMContentLoaded', function() {
+    // 加载内置平台列表
+    loadPlatforms();
+    
     // 加载音源列表
     loadSources();
     
@@ -454,19 +565,33 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
+    // 从 URL 导入按钮
+    document.getElementById('importUrlBtn').addEventListener('click', function() {
+        const url = document.getElementById('sourceUrl').value;
+        importSourceFromURL(url);
+    });
+    
+    // URL 输入框回车导入
+    document.getElementById('sourceUrl').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            const url = document.getElementById('sourceUrl').value;
+            importSourceFromURL(url);
+        }
+    });
+    
     // 搜索按钮
     document.getElementById('searchBtn').addEventListener('click', function() {
         const keyword = document.getElementById('keyword').value;
-        const sourceId = document.getElementById('sourceSelect').value;
-        search(keyword, sourceId, 1);
+        const platformId = document.getElementById('platformSelect').value;
+        search(keyword, platformId, 1);
     });
     
     // 回车搜索
     document.getElementById('keyword').addEventListener('keypress', function(e) {
         if (e.key === 'Enter') {
             const keyword = document.getElementById('keyword').value;
-            const sourceId = document.getElementById('sourceSelect').value;
-            search(keyword, sourceId, 1);
+            const platformId = document.getElementById('platformSelect').value;
+            search(keyword, platformId, 1);
         }
     });
     
