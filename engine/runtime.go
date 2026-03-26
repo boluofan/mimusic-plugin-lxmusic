@@ -4,12 +4,14 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
 
 	"github.com/dop251/goja"
+	"github.com/mimusic-org/plugin/api/plugin"
 )
 
 // SourceRuntime 单个音源的持久化运行时
@@ -24,6 +26,11 @@ type SourceRuntime struct {
 // NewSourceRuntime 创建并初始化一个音源运行时
 // 流程：创建 VM → 注入 lx.* API → setupGlobals → 执行脚本 → 等待 inited → 返回
 func NewSourceRuntime(sourceID string, script string) (*SourceRuntime, error) {
+	return NewSourceRuntimeWithContext(context.Background(), sourceID, script)
+}
+
+// NewSourceRuntimeWithContext 创建并初始化一个音源运行时（携带 context）
+func NewSourceRuntimeWithContext(ctx context.Context, sourceID string, script string) (*SourceRuntime, error) {
 	vm := goja.New()
 
 	// 解析脚本元数据
@@ -39,7 +46,7 @@ func NewSourceRuntime(sourceID string, script string) (*SourceRuntime, error) {
 	setupConsole(vm)
 
 	// 设置全局 API（setTimeout/setInterval/require 等）
-	flushTimers := setupGlobals(vm)
+	flushTimers := setupGlobals(ctx, vm)
 
 	// 执行脚本
 	_, err := vm.RunString(script)
@@ -265,13 +272,26 @@ func setupConsole(vm *goja.Runtime) {
 }
 
 // setupGlobals 注入浏览器/Node.js 全局 API 到 goja 运行时
-// 返回 flushTimers 函数，需在 vm.RunString(script) 之后调用以执行 setTimeout 注册的回调
-func setupGlobals(vm *goja.Runtime) (flushTimers func()) {
-	var timerID int64
+// 返回 flushTimers 函数，需在 vm.RunString(script) 之后调用以执行 delay≤0 的 setTimeout 回调
+// delay≤0 的 setTimeout/setInterval：收集到 pendingCallbacks，由 flushTimers 同步执行
+// delay>0 的 setTimeout/setInterval：通过 plugin.GetTimerManager().RegisterDelayTimer() 真正异步执行
+func setupGlobals(ctx context.Context, vm *goja.Runtime) (flushTimers func()) {
+	var syncTimerID int64
 	var pendingCallbacks []goja.Callable
 
+	// asyncCallbacks: goTimerID -> JS 函数（用于 setTimeout delay>0）
+	asyncCallbacks := make(map[uint64]goja.Callable)
+
+	// intervalCallbacks: intervalID -> JS 函数（用于 setInterval delay>0）
+	intervalCallbacks := make(map[uint64]goja.Callable)
+	// intervalCancelled: intervalID -> 是否已取消
+	intervalCancelled := make(map[uint64]bool)
+	// intervalCurrentGoID: intervalID -> 当前等待中的 goTimerID（用于 clearInterval 取消）
+	intervalCurrentGoID := make(map[uint64]uint64)
+
+	tm := plugin.GetTimerManager()
+
 	// setTimeout(callback, delay) -> timerId
-	// 在同步环境中，收集回调，脚本执行后统一执行
 	vm.Set("setTimeout", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 1 {
 			return goja.Undefined()
@@ -280,17 +300,48 @@ func setupGlobals(vm *goja.Runtime) (flushTimers func()) {
 		if !ok {
 			return goja.Undefined()
 		}
-		timerID++
-		pendingCallbacks = append(pendingCallbacks, fn)
-		return vm.ToValue(timerID)
+
+		delay := int64(0)
+		if len(call.Arguments) >= 2 {
+			delay = call.Argument(1).ToInteger()
+		}
+
+		if delay <= 0 {
+			// 同步路径：收集到 pendingCallbacks，由 flushTimers 执行
+			syncTimerID++
+			pendingCallbacks = append(pendingCallbacks, fn)
+			return vm.ToValue(syncTimerID)
+		}
+
+		// 异步路径：注册真正的延迟定时器
+		// 先声明 ID 变量，再在闭包中引用（避免 Go 闭包不能在赋值前引用自身的问题）
+		var asyncTimerID uint64
+		capturedFn := fn
+		asyncTimerID = tm.RegisterDelayTimer(ctx, delay, func() {
+			if f, ok := asyncCallbacks[asyncTimerID]; ok {
+				_, err := f(goja.Undefined())
+				if err != nil {
+					slog.Warn("异步 setTimeout 回调执行失败", "error", err)
+				}
+				delete(asyncCallbacks, asyncTimerID)
+			}
+		})
+		asyncCallbacks[asyncTimerID] = capturedFn
+		return vm.ToValue(asyncTimerID)
 	})
 
-	// clearTimeout - no-op
+	// clearTimeout(timerID)
 	vm.Set("clearTimeout", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 1 {
+			return goja.Undefined()
+		}
+		id := uint64(call.Argument(0).ToInteger())
+		delete(asyncCallbacks, id)
+		_ = tm.CancelTimer(ctx, id)
 		return goja.Undefined()
 	})
 
-	// setInterval - 收集回调但不真正循环
+	// setInterval(callback, delay) -> intervalID
 	vm.Set("setInterval", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 1 {
 			return goja.Undefined()
@@ -299,13 +350,67 @@ func setupGlobals(vm *goja.Runtime) (flushTimers func()) {
 		if !ok {
 			return goja.Undefined()
 		}
-		timerID++
-		pendingCallbacks = append(pendingCallbacks, fn)
-		return vm.ToValue(timerID)
+
+		delay := int64(0)
+		if len(call.Arguments) >= 2 {
+			delay = call.Argument(1).ToInteger()
+		}
+
+		if delay <= 0 {
+			// 同步路径：只执行一次（语义上退化为 setTimeout）
+			syncTimerID++
+			pendingCallbacks = append(pendingCallbacks, fn)
+			return vm.ToValue(syncTimerID)
+		}
+
+		// 为 setInterval 分配一个稳定的 intervalID（使用 uint64，避免与 syncTimerID 混淆）
+		// 借用 tm 的 nextID 策略：先注册一个占位定时器拿到 ID，再取消它
+		placeholderID := tm.RegisterDelayTimer(ctx, delay, func() {})
+		_ = tm.CancelTimer(ctx, placeholderID)
+		intervalID := placeholderID
+
+		intervalCallbacks[intervalID] = fn
+		intervalCancelled[intervalID] = false
+
+		// 递归注册：每次回调执行后再注册下一个
+		var registerNext func()
+		registerNext = func() {
+			if intervalCancelled[intervalID] {
+				return
+			}
+			goTimerID := tm.RegisterDelayTimer(ctx, delay, func() {
+				if intervalCancelled[intervalID] {
+					return
+				}
+				if f, ok := intervalCallbacks[intervalID]; ok {
+					_, err := f(goja.Undefined())
+					if err != nil {
+						slog.Warn("setInterval 回调执行失败", "error", err)
+					}
+				}
+				if !intervalCancelled[intervalID] {
+					registerNext()
+				}
+			})
+			intervalCurrentGoID[intervalID] = goTimerID
+		}
+		registerNext()
+
+		return vm.ToValue(intervalID)
 	})
 
-	// clearInterval - no-op
+	// clearInterval(intervalID)
 	vm.Set("clearInterval", func(call goja.FunctionCall) goja.Value {
+		if len(call.Arguments) < 1 {
+			return goja.Undefined()
+		}
+		id := uint64(call.Argument(0).ToInteger())
+		intervalCancelled[id] = true
+		delete(intervalCallbacks, id)
+		if goID, ok := intervalCurrentGoID[id]; ok {
+			_ = tm.CancelTimer(ctx, goID)
+			delete(intervalCurrentGoID, id)
+		}
 		return goja.Undefined()
 	})
 
@@ -325,7 +430,7 @@ func setupGlobals(vm *goja.Runtime) (flushTimers func()) {
 		})
 	}
 
-	// 返回 flush 函数
+	// 返回 flush 函数：只处理 pendingCallbacks（delay≤0 的同步回调）
 	return func() {
 		for i := 0; i < 10; i++ { // 最多 10 轮，防止无限循环
 			if len(pendingCallbacks) == 0 {

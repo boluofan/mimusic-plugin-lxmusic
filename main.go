@@ -89,17 +89,34 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 		return &emptypb.Empty{}, fmt.Errorf("failed to init urlmap store: %w", err)
 	}
 
-	// 5. 启动时加载已启用的音源到 RuntimeManager
+	// 5. 异步加载已启用的音源到 RuntimeManager（避免阻塞 Init）
 	enabledSources := p.sourceManager.GetEnabledSources()
-	for _, src := range enabledSources {
-		if err := p.runtimeManager.LoadSource(src.ID, src.Script); err != nil {
-			slog.Warn("加载已启用音源失败", "id", src.ID, "name", src.Name, "error", err)
-		} else {
-			slog.Info("已加载音源", "id", src.ID, "name", src.Name)
-		}
-	}
 	if len(enabledSources) > 0 {
-		slog.Info("启动时加载已启用音源完成", "loaded", p.runtimeManager.Count(), "total", len(enabledSources))
+		slog.Info("将异步加载已启用音源", "total", len(enabledSources))
+		tm := plugin.GetTimerManager()
+		// 使用闭包递归注册定时器，逐个加载音源
+		var loadNext func(index int)
+		loadNext = func(index int) {
+			if index >= len(enabledSources) {
+				slog.Info("异步加载已启用音源完成", "loaded", p.runtimeManager.Count(), "total", len(enabledSources))
+				return
+			}
+			src := enabledSources[index]
+			slog.Info("正在异步加载音源", "id", src.ID, "name", src.Name, "progress", fmt.Sprintf("%d/%d", index+1, len(enabledSources)))
+			if err := p.runtimeManager.LoadSource(src.ID, src.Script); err != nil {
+				slog.Warn("加载已启用音源失败", "id", src.ID, "name", src.Name, "error", err)
+			} else {
+				slog.Info("已加载音源", "id", src.ID, "name", src.Name)
+			}
+			// 注册下一个定时器加载下一个音源
+			tm.RegisterDelayTimer(ctx, 100, func() {
+				loadNext(index + 1)
+			})
+		}
+		// 注册第一个定时器，延迟 100ms 开始加载
+		tm.RegisterDelayTimer(ctx, 100, func() {
+			loadNext(0)
+		})
 	}
 
 	// 6. 初始化处理器
