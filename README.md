@@ -1,5 +1,10 @@
 # mimusic-plugin-lxmusic
 
+[![Release](https://img.shields.io/github/v/release/mimusic-org/mimusic-plugin-lxmusic)](https://github.com/mimusic-org/mimusic-plugin-lxmusic/releases)
+[![License](https://img.shields.io/github/license/mimusic-org/mimusic-plugin-lxmusic)](LICENSE)
+
+> 仓库地址：https://github.com/mimusic-org/mimusic-plugin-lxmusic
+
 MiMusic 洛雪音源插件，提供多平台音乐搜索和播放 URL 获取功能。搜索使用原生 Go 实现（musicsdk），播放 URL 通过 JS 音源脚本获取。本插件基于 [MiMusic](https://github.com/mimusic-org/mimusic) 插件系统开发。
 
 ## 功能特性

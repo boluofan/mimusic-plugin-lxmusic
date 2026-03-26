@@ -1,0 +1,135 @@
+name: Release Plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（留空则自动生成日期版本，格式：Y.M.D）'
+        required: false
+        default: ''
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # 创建 Release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            YEAR=$(date +'%Y')
+            MONTH=$(date +'%-m')
+            DAY=$(date +'%-d')
+            VERSION="${YEAR}.${MONTH}.${DAY}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Generated version: ${VERSION}"
+
+      - name: Update version in main.go
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          OLD_VERSION=$(grep -o 'Version: "[^"]*"' main.go | cut -d'"' -f2)
+          sed -i "s/Version: \"${OLD_VERSION}\"/Version: \"${VERSION}\"/" main.go
+          echo "Updated version: ${OLD_VERSION} → ${VERSION}"
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add main.go
+          git diff --staged --quiet || git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+          git push
+
+      - name: Build WASM
+        run: make build
+
+      - name: Package plugin
+        run: zip lxmusic.wasm.zip lxmusic.wasm
+
+      - name: Extract plugin info
+        id: plugin_info
+        run: |
+          NAME=$(grep -o 'Name: *"[^"]*"' main.go | cut -d'"' -f2)
+          DESC=$(grep -o 'Description: *"[^"]*"' main.go | cut -d'"' -f2)
+          AUTHOR=$(grep -o 'Author: *"[^"]*"' main.go | cut -d'"' -f2)
+          HOMEPAGE=$(grep -o 'Homepage: *"[^"]*"' main.go | cut -d'"' -f2)
+          echo "name=${NAME}" >> $GITHUB_OUTPUT
+          echo "desc=${DESC}" >> $GITHUB_OUTPUT
+          echo "author=${AUTHOR}" >> $GITHUB_OUTPUT
+          echo "homepage=${HOMEPAGE}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        id: create_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+
+          # 删除已存在的同名 Release 和 Tag
+          if gh release view "${TAG}" &>/dev/null; then
+            echo "Release ${TAG} already exists, deleting..."
+            gh release delete "${TAG}" --yes
+            git push origin ":refs/tags/${TAG}" || true
+          fi
+
+          # 创建新 Release 并上传文件
+          gh release create "${TAG}" \
+            lxmusic.wasm.zip \
+            --title "v${VERSION}" \
+            --notes "洛雪音源插件 v${VERSION}" \
+            --latest
+
+          # 获取下载 URL
+          FILE_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/lxmusic.wasm.zip"
+          echo "file_url=${FILE_URL}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Post comment to mimusic issue
+        env:
+          GH_TOKEN: ${{ secrets.MIMUSIC_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          FILE_URL="${{ steps.create_release.outputs.file_url }}"
+          NAME="${{ steps.plugin_info.outputs.name }}"
+          DESC="${{ steps.plugin_info.outputs.desc }}"
+          AUTHOR="${{ steps.plugin_info.outputs.author }}"
+          HOMEPAGE="${{ steps.plugin_info.outputs.homepage }}"
+          BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          COMMENT=$(cat <<EOF
+          ## 插件更新
+
+          ### 插件信息
+
+          - **名称**: ${NAME}
+          - **版本**: ${VERSION}
+          - **描述**: ${DESC}
+          - **作者**: ${AUTHOR}
+          - **主页**: ${HOMEPAGE}
+
+          ### 下载
+
+          - [lxmusic.wasm.zip](${FILE_URL})
+
+          ---
+          *自动提交于 ${BUILD_TIME}*
+          EOF
+          )
+
+          echo "$COMMENT" | gh issue comment 4 \
+            --repo mimusic-org/mimusic \
+            --body-file -
