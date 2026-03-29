@@ -76,7 +76,10 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	// 2. 初始化 RuntimeManager
 	p.runtimeManager = engine.NewRuntimeManager()
 
-	// 3. 初始化 musicsdk Registry 并注册 5 个平台搜索器
+	// 3. 设置 sourceManager 的加载函数
+	p.sourceManager.SetLoadFunc(p.runtimeManager.LoadSource, p.pluginID)
+
+	// 4. 初始化 musicsdk Registry 并注册 5 个平台搜索器
 	p.registry = musicsdk.NewRegistry()
 	p.registry.Register(musicsdk.NewKgSearcher()) // 酷狗音乐
 	p.registry.Register(musicsdk.NewKwSearcher()) // 酷我音乐
@@ -85,53 +88,39 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	p.registry.Register(musicsdk.NewMgSearcher()) // 咪咕音乐
 	slog.Info("已注册内置平台搜索器", "count", 5)
 
-	// 4. 初始化 urlmap.Store
+	// 5. 初始化 urlmap.Store
 	p.urlmapStore, err = urlmap.NewStore(dataDir)
 	if err != nil {
 		return &emptypb.Empty{}, fmt.Errorf("failed to init urlmap store: %w", err)
 	}
 
-	// 5. 异步加载已启用的音源到 RuntimeManager（避免阻塞 Init）
+	// 6. 异步加载已启用的音源（避免阻塞 Init）
 	enabledSources := p.sourceManager.GetEnabledSources()
 	if len(enabledSources) > 0 {
 		slog.Info("将异步加载已启用音源", "total", len(enabledSources))
 		tm := plugin.GetTimerManager()
-		// 使用闭包递归注册定时器，逐个加载音源
-		var loadNext func(index int)
-		loadNext = func(index int) {
-			if index >= len(enabledSources) {
-				slog.Info("异步加载已启用音源完成", "loaded", p.runtimeManager.Count(), "total", len(enabledSources))
-				return
-			}
-			src := enabledSources[index]
-			slog.Info("正在异步加载音源", "id", src.ID, "name", src.Name, "progress", fmt.Sprintf("%d/%d", index+1, len(enabledSources)))
-			if err := p.runtimeManager.LoadSource(src.ID, src.Script, p.pluginID); err != nil {
-				slog.Warn("加载已启用音源失败", "id", src.ID, "name", src.Name, "error", err)
-			} else {
-				slog.Info("已加载音源", "id", src.ID, "name", src.Name)
-			}
-			// 注册下一个定时器加载下一个音源
-			tm.RegisterDelayTimer(ctx, 100, func() {
-				loadNext(index + 1)
-			})
-		}
-		// 注册第一个定时器，延迟 100ms 开始加载
+		// 延迟加载所有已启用的音源
 		tm.RegisterDelayTimer(ctx, 100, func() {
-			loadNext(0)
+			errors := p.sourceManager.LoadEnabledSources()
+			if len(errors) > 0 {
+				slog.Warn("部分音源加载失败", "failed", len(errors), "loaded", p.runtimeManager.Count())
+			} else {
+				slog.Info("异步加载已启用音源完成", "loaded", p.runtimeManager.Count(), "total", len(enabledSources))
+			}
 		})
 	}
 
-	// 6. 初始化处理器
+	// 7. 初始化处理器
 	p.sourceHandler = handlers.NewSourceHandler(p.sourceManager, p.runtimeManager, p.pluginID)
 	p.searchHandler = handlers.NewSearchHandler(p.registry, p.runtimeManager, p.urlmapStore)
 
-	// 7. 获取路由管理器
+	// 8. 获取路由管理器
 	routerManager := plugin.GetRouterManager()
 
 	// 初始化静态文件处理器
 	p.staticHandler = plugin.NewStaticHandler(staticFS, "/lxmusic", routerManager, ctx)
 
-	// 8. 注册 API 路由
+	// 9. 注册 API 路由
 	// 音源管理（需要认证）
 	routerManager.RegisterRouter(ctx, "GET", "/lxmusic/api/sources", p.sourceHandler.HandleListSources, true)
 	routerManager.RegisterRouter(ctx, "POST", "/lxmusic/api/sources/import", p.sourceHandler.HandleImportSource, true)

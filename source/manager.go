@@ -14,11 +14,16 @@ import (
 	"time"
 )
 
+// LoadFunc 定义加载音源的函数类型
+type LoadFunc func(sourceID string, script string, pluginID int64) error
+
 // Manager 管理已导入的音源
 type Manager struct {
 	sources   map[string]*SourceInfo // ID -> SourceInfo
 	idCounter int                    // ID 计数器（用于生成唯一 ID）
 	storage   *Storage               // 持久化存储
+	loadFunc  LoadFunc               // 加载函数（由外部设置）
+	pluginID  int64                  // 插件 ID（用于加载函数）
 }
 
 // NewManager 创建一个新的音源管理器
@@ -43,6 +48,12 @@ func NewManager(baseDir string) (*Manager, error) {
 	}
 
 	return m, nil
+}
+
+// SetLoadFunc 设置加载函数
+func (m *Manager) SetLoadFunc(fn LoadFunc, pluginID int64) {
+	m.loadFunc = fn
+	m.pluginID = pluginID
 }
 
 // loadFromDisk 从磁盘加载已持久化的音源
@@ -76,6 +87,7 @@ func (m *Manager) loadFromDisk() error {
 // ImportFromJS 导入单个 JS 文件
 // filename: 原始文件名
 // content: JS 文件内容
+// 如果已存在同名音源，会先删除旧的再导入新的
 func (m *Manager) ImportFromJS(filename string, content []byte) (*SourceInfo, error) {
 	// 1. 校验 JS 内容
 	if err := ValidateJSContent(content); err != nil {
@@ -94,10 +106,19 @@ func (m *Manager) ImportFromJS(filename string, content []byte) (*SourceInfo, er
 		name = InferNameFromFilename(filename)
 	}
 
-	// 4. 生成唯一 ID
+	// 4. 检查是否存在同名音源，如果存在则删除旧的
+	if existingID := m.findByName(name); existingID != "" {
+		slog.Info("发现同名音源，删除旧的", "name", name, "existingID", existingID)
+		if err := m.DeleteSource(existingID); err != nil {
+			slog.Warn("删除同名音源失败", "id", existingID, "error", err)
+			// 继续导入，不影响新音源的导入
+		}
+	}
+
+	// 5. 生成唯一 ID
 	id := m.generateID(name)
 
-	// 5. 创建 SourceInfo
+	// 6. 创建 SourceInfo
 	info := &SourceInfo{
 		ID:          id,
 		Name:        name,
@@ -110,10 +131,10 @@ func (m *Manager) ImportFromJS(filename string, content []byte) (*SourceInfo, er
 		Enabled:     true, // 导入时默认启用
 	}
 
-	// 6. 存入 map
+	// 7. 存入 map
 	m.sources[id] = info
 
-	// 7. 持久化保存
+	// 8. 持久化保存
 	if err := m.storage.SaveScript(id, content); err != nil {
 		// 回滚内存状态
 		delete(m.sources, id)
@@ -351,4 +372,51 @@ func (m *Manager) toSlug(name string) string {
 		}
 	}
 	return result.String()
+}
+
+// findByName 根据名称查找音源 ID，如果不存在返回空字符串
+func (m *Manager) findByName(name string) string {
+	for id, info := range m.sources {
+		if info.Name == name {
+			return id
+		}
+	}
+	return ""
+}
+
+// LoadSource 加载音源到运行时
+// 如果加载失败，会自动禁用该音源
+func (m *Manager) LoadSource(sourceID string) error {
+	info, exists := m.sources[sourceID]
+	if !exists {
+		return fmt.Errorf("source not found: %s", sourceID)
+	}
+
+	if m.loadFunc == nil {
+		return fmt.Errorf("loadFunc not set")
+	}
+
+	err := m.loadFunc(sourceID, info.Script, m.pluginID)
+	if err != nil {
+		slog.Warn("LoadSource: 音源加载失败，将禁用", "sourceID", sourceID, "error", err)
+		if disableErr := m.DisableSource(sourceID); disableErr != nil {
+			slog.Error("LoadSource: 禁用失败音源失败", "sourceID", sourceID, "error", disableErr)
+		}
+		return err
+	}
+
+	return nil
+}
+
+// LoadEnabledSources 加载所有已启用的音源
+func (m *Manager) LoadEnabledSources() []error {
+	var errors []error
+	for _, info := range m.sources {
+		if info.Enabled {
+			if err := m.LoadSource(info.ID); err != nil {
+				errors = append(errors, fmt.Errorf("load %s: %w", info.ID, err))
+			}
+		}
+	}
+	return errors
 }
