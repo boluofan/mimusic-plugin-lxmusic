@@ -209,6 +209,7 @@ func (s *KwSearcher) filterData(item kwSearchItem) SearchItem {
 		Duration: duration,
 		Source:   "kw",
 		MusicID:  musicID,
+		Songmid:  musicID, // kw 的 songmid 即为 musicID（洛雪音乐源 musicUrl 需要此字段）
 		Img:      img,
 		Types:    types,
 	}
