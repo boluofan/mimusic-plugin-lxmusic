@@ -47,7 +47,7 @@ type kwSearchItem struct {
 	Duration         string `json:"DURATION"`
 	NMinfo           string `json:"N_MINFO"`
 	WebAlbumpicShort string `json:"web_albumpic_short"`
-	HtsMvpic         string `json:"hts_mvpic"`
+	HtsMvpic         string `json:"hts_MVPIC"`
 	ProbAlbumpic     string `json:"prob_albumpic"`
 }
 
@@ -61,17 +61,25 @@ func (s *KwSearcher) Search(keyword string, page int, limit int) (*SearchResult,
 	}
 
 	// 构建请求 URL（酷我 page 从 0 开始）
+	// 必须携带 rformat=json&encoding=utf8 才能返回 JSON 格式
 	params := url.Values{}
+	params.Set("client", "kt")
 	params.Set("all", keyword)
 	params.Set("pn", fmt.Sprintf("%d", page-1))
 	params.Set("rn", fmt.Sprintf("%d", limit))
-	params.Set("ft", "music")
-	params.Set("itemset", "web_2013")
-	params.Set("newsearch", "1")
-	params.Set("ty", "0")
-	params.Set("cluster", "0")
-	params.Set("vermerge", "1")
+	params.Set("uid", "794762570")
+	params.Set("ver", "kwplayer_ar_9.2.2.1")
 	params.Set("vipver", "1")
+	params.Set("show_copyright_off", "1")
+	params.Set("newver", "1")
+	params.Set("ft", "music")
+	params.Set("cluster", "0")
+	params.Set("strategy", "2012")
+	params.Set("encoding", "utf8")
+	params.Set("rformat", "json")
+	params.Set("vermerge", "1")
+	params.Set("mobi", "1")
+	params.Set("issubtitle", "1")
 
 	apiURL := "http://search.kuwo.cn/r.s?" + params.Encode()
 
@@ -121,11 +129,45 @@ func (s *KwSearcher) Search(keyword string, page int, limit int) (*SearchResult,
 
 // fixJsonFormat 修复酷我返回的非标准 JSON 格式
 // 酷我有时返回单引号 JSON，需要转换为双引号
+// Go regexp 不支持 lookbehind，改用逐字符状态机实现
 func (s *KwSearcher) fixJsonFormat(str string) string {
-	// 使用正则替换单引号为双引号（仅处理 JSON 键值对中的单引号）
-	// 匹配模式：单引号前后是逗号、冒号、方括号、花括号
-	re := regexp.MustCompile(`('(?=(,\s*')))|('(?=:))|((?<=([:,]\s*))')|((?<={)')|('(?=}))`)
-	return re.ReplaceAllString(str, `"`)
+	var buf strings.Builder
+	buf.Grow(len(str))
+
+	for i := 0; i < len(str); i++ {
+		ch := str[i]
+		if ch != '\'' {
+			buf.WriteByte(ch)
+			continue
+		}
+		// 判断单引号前一个非空白字符
+		prevIdx := i - 1
+		for prevIdx >= 0 && (str[prevIdx] == ' ' || str[prevIdx] == '\t') {
+			prevIdx--
+		}
+		var prev byte
+		if prevIdx >= 0 {
+			prev = str[prevIdx]
+		}
+		// 判断单引号后一个非空白字符
+		nextIdx := i + 1
+		for nextIdx < len(str) && (str[nextIdx] == ' ' || str[nextIdx] == '\t') {
+			nextIdx++
+		}
+		var next byte
+		if nextIdx < len(str) {
+			next = str[nextIdx]
+		}
+		// 符合 JSON 结构边界时替换为双引号
+		if prev == ':' || prev == ',' || prev == '[' || prev == '{' ||
+			next == ':' || next == ',' || next == ']' || next == '}' || next == '\'' {
+			buf.WriteByte('"')
+		} else {
+			buf.WriteByte(ch)
+		}
+	}
+
+	return buf.String()
 }
 
 // handleResult 处理搜索结果
