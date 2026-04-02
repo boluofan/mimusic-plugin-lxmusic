@@ -326,6 +326,9 @@ func (h *SearchHandler) HandleGetMusicUrl(req *http.Request) (*plugin.RouterResp
 	if accessToken != "" {
 		redirectURL += "&access_token=" + url.QueryEscape(accessToken)
 	}
+	if req.URL.Query().Get("prefetch") == "true" {
+		redirectURL += "&prefetch=true"
+	}
 	return &plugin.RouterResponse{
 		StatusCode: http.StatusFound,
 		Headers:    map[string]string{"Location": redirectURL},
