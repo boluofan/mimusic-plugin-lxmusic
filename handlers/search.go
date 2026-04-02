@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -141,8 +142,8 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 
 	// 第一步：为每首歌曲生成 hash，收集成功项到 batch 列表
 	type batchItem struct {
-		song    musicsdk.SearchItem
-		hash    string
+		song     musicsdk.SearchItem
+		hash     string
 		musicUrl string
 	}
 	var batch []batchItem
@@ -265,80 +266,68 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 // HandleGetMusicUrl 获取播放 URL（通过 hash 查找）
 // GET /lxmusic/api/music/url/{hash}
 // 此路由不需要认证，主程序播放时直接调用
-// 流程：hash查找 → 检查缓存 → 不存在则下载并保存到缓存 → 返回文件 stream
+// 流程：检查主程序缓存 → 命中则重定向到缓存接口 → 未命中则获取 CDN URL 并重定向到缓存接口（带 url 参数）
 func (h *SearchHandler) HandleGetMusicUrl(req *http.Request) (*plugin.RouterResponse, error) {
-	// 从 URL path 提取最后一段作为 hash
+	// 1. 从 URL path 提取 hash
 	path := req.URL.Path
 	hash := path[strings.LastIndex(path, "/")+1:]
 	if hash == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 hash 参数"), nil
 	}
 
-	// 从 urlmap 查找映射
+	// 透传 access_token
+	accessToken := req.URL.Query().Get("access_token")
+
+	// 2. 通过 CallRouter HEAD 请求检查主程序缓存是否存在（内部调用，无网络开销）
+	hostFunctions := pbplugin.NewHostFunctions()
+	cachePath := "/api/v1/cache/" + hash
+	if accessToken != "" {
+		cachePath += "?access_token=" + accessToken
+	}
+	cacheResp, err := hostFunctions.CallRouter(req.Context(), &pbplugin.CallRouterRequest{
+		Method: "HEAD",
+		Path:   cachePath,
+	})
+	if err == nil && cacheResp.StatusCode == http.StatusOK {
+		// 缓存命中：直接重定向到 cache 接口，不调用 JS runtime
+		slog.Info("缓存命中，跳过 URL 解析", "hash", hash)
+		redirectURL := fmt.Sprintf("/api/v1/cache/%s", hash)
+		if accessToken != "" {
+			redirectURL += "?access_token=" + url.QueryEscape(accessToken)
+		}
+		return &plugin.RouterResponse{
+			StatusCode: http.StatusFound,
+			Headers:    map[string]string{"Location": redirectURL},
+		}, nil
+	}
+
+	// 3. 缓存未命中：查 urlmap
 	mapping, exists := h.urlmapStore.Get(hash)
 	if !exists {
 		return plugin.ErrorResponse(http.StatusNotFound, "URL 映射不存在"), nil
 	}
 
-	slog.Info("获取播放 URL", "hash", hash, "platform", mapping.Platform, "quality", mapping.Quality)
+	slog.Info("缓存未命中，获取播放 URL", "hash", hash, "platform", mapping.Platform, "quality", mapping.Quality)
 
-	// 初始化缓存管理器
-	cache := NewMusicCache()
-
-	// 1. 检查缓存是否存在
-	if cachedPath, found := cache.FindCachedFile(hash); found {
-		slog.Info("命中缓存", "hash", hash, "path", cachedPath)
-		resp, err := cache.ServeCachedFile(cachedPath)
-		if err == nil {
-			return resp, nil
-		}
-		slog.Warn("读取缓存文件失败，将重新下载", "error", err)
+	// 4. 调用 JS runtime 获取 CDN URL
+	musicUrl, err := h.runtimeManager.GetMusicUrl(mapping.Platform, mapping.Quality, mapping.SongInfo)
+	if err != nil {
+		slog.Error("获取播放 URL 失败", "hash", hash, "error", err)
+		return plugin.ErrorResponse(http.StatusBadGateway, "获取播放 URL 失败: "+err.Error()), nil
+	}
+	if musicUrl == "" {
+		return plugin.ErrorResponse(http.StatusBadGateway, "获取到的播放 URL 为空"), nil
 	}
 
-	// 2. 获取 URL + 下载缓存，带重试逻辑
-	// GetMusicUrl 内部已有多源轮询/重试，但下载可能因非音频响应失败，此时需要重新获取 URL
-	const maxRetries = 3
-	var lastMusicUrl string
-	var lastErr error
+	slog.Info("获取播放 URL 成功，重定向到缓存接口", "hash", hash, "url", musicUrl)
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		musicUrl, err := h.runtimeManager.GetMusicUrl(mapping.Platform, mapping.Quality, mapping.SongInfo)
-		if err != nil {
-			slog.Warn("获取播放 URL 失败", "hash", hash, "attempt", attempt, "maxRetries", maxRetries, "error", err)
-			lastErr = err
-			continue
-		}
-		if musicUrl == "" {
-			slog.Warn("获取到的播放 URL 为空", "hash", hash, "attempt", attempt, "maxRetries", maxRetries)
-			lastErr = fmt.Errorf("获取到的播放 URL 为空")
-			continue
-		}
-
-		lastMusicUrl = musicUrl
-		slog.Info("获取播放 URL 成功", "hash", hash, "url", musicUrl, "attempt", attempt)
-
-		resp, err := cache.DownloadAndCache(hash, musicUrl)
-		if err != nil {
-			slog.Warn("下载并缓存失败", "hash", hash, "attempt", attempt, "maxRetries", maxRetries, "error", err)
-			lastErr = err
-			continue
-		}
-
-		return resp, nil
+	// 5. 302 重定向到主程序缓存接口，带上 CDN URL
+	redirectURL := fmt.Sprintf("/api/v1/cache/%s?url=%s", hash, url.QueryEscape(musicUrl))
+	if accessToken != "" {
+		redirectURL += "&access_token=" + url.QueryEscape(accessToken)
 	}
-
-	// 全部重试失败，回退到 302 重定向
-	if lastMusicUrl != "" {
-		slog.Warn("全部重试失败，回退到 302 重定向", "hash", hash, "attempts", maxRetries, "error", lastErr)
-		return &plugin.RouterResponse{
-			StatusCode: http.StatusFound,
-			Headers: map[string]string{
-				"Location": lastMusicUrl,
-			},
-			Body: nil,
-		}, nil
-	}
-
-	slog.Error("获取播放 URL 全部失败", "hash", hash, "attempts", maxRetries, "error", lastErr)
-	return plugin.ErrorResponse(http.StatusInternalServerError, "获取播放 URL 失败: "+lastErr.Error()), nil
+	return &plugin.RouterResponse{
+		StatusCode: http.StatusFound,
+		Headers:    map[string]string{"Location": redirectURL},
+	}, nil
 }
