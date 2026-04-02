@@ -152,19 +152,37 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 	for _, song := range request.Songs {
 		result := ImportResult{Name: song.Name}
 
-		// 构建 songInfo
+		// 归一化：musicId 和 songmid 互为 fallback（wy/kw 的 musicId 与 songmid 是同一个值）
+		musicID := song.MusicID
+		if musicID == "" {
+			musicID = song.Songmid
+		}
+		songmid := song.Songmid
+		if songmid == "" {
+			songmid = song.MusicID
+		}
+
+		slog.Info("导入歌曲原始数据", "name", song.Name, "source", song.Source, "musicId", musicID, "songmid", songmid, "hash", song.Hash, "copyrightId", song.CopyrightId)
+
+		// 构建 songInfo（包含各平台歌词获取器所需的所有字段）
+		// - wy: musicId
+		// - tx: songmid
+		// - kg: name, singer, hash, duration
+		// - kw: musicId
+		// - mg: copyrightId
 		songInfo := map[string]interface{}{
-			"name":    song.Name,
-			"singer":  song.Singer,
-			"album":   song.Album,
-			"source":  song.Source,
-			"musicId": song.MusicID,
+			"name":     song.Name,
+			"singer":   song.Singer,
+			"album":    song.Album,
+			"source":   song.Source,
+			"musicId":  musicID,
+			"duration": song.Duration, // kg 平台歌词获取需要
 		}
 		if song.Hash != "" {
 			songInfo["hash"] = song.Hash
 		}
-		if song.Songmid != "" {
-			songInfo["songmid"] = song.Songmid
+		if songmid != "" {
+			songInfo["songmid"] = songmid
 		}
 		if song.StrMediaMid != "" {
 			songInfo["strMediaMid"] = song.StrMediaMid
@@ -255,6 +273,7 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 				// 第三步：获取歌词并更新（导入成功后）
 				if i < len(addResp.Songs) {
 					songID := addResp.Songs[i].ID
+					slog.Info("准备获取歌词", "songID", songID, "source", item.song.Source, "songInfo_musicId", item.songInfo["musicId"])
 					h.fetchAndUpdateLyric(req, hostFunctions, songID, item.song.Source, item.songInfo)
 				}
 			}
