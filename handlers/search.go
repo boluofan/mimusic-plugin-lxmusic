@@ -105,9 +105,10 @@ func (h *SearchHandler) HandleListPlatforms(req *http.Request) (*plugin.RouterRe
 
 // ImportSongsRequest 导入歌曲请求
 type ImportSongsRequest struct {
-	Songs      []musicsdk.SearchItem `json:"songs"`
-	Quality    string                `json:"quality"`
-	PlaylistID int64                 `json:"playlist_id"`
+	Songs           []musicsdk.SearchItem `json:"songs"`
+	Quality         string                `json:"quality"`
+	PlaylistID      int64                 `json:"playlist_id"`
+	NewPlaylistName string                `json:"new_playlist_name"`
 }
 
 // ImportResult 导入结果
@@ -139,6 +140,7 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 	var results []ImportResult
 	successCount := 0
 	failedCount := 0
+	var importedSongIDs []int64
 
 	// 第一步：为每首歌曲生成 hash，收集成功项到 batch 列表
 	type batchItem struct {
@@ -273,10 +275,60 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 				// 第三步：获取歌词并更新（导入成功后）
 				if i < len(addResp.Songs) {
 					songID := addResp.Songs[i].ID
+					if songID > 0 {
+						importedSongIDs = append(importedSongIDs, songID)
+					}
 					slog.Info("准备获取歌词", "songID", songID, "source", item.song.Source, "songInfo_musicId", item.songInfo["musicId"])
 					h.fetchAndUpdateLyric(req, hostFunctions, songID, item.song.Source, item.songInfo)
 				}
 			}
+		}
+	}
+
+	// 第四步：歌单处理
+	playlistID := request.PlaylistID
+	playlistName := ""
+
+	// 如果需要新建歌单
+	if request.NewPlaylistName != "" {
+		createBody, _ := json.Marshal(map[string]string{
+			"name": request.NewPlaylistName,
+			"type": "normal",
+		})
+		createResp, err := hostFunctions.CallRouter(req.Context(), &pbplugin.CallRouterRequest{
+			Method: "POST",
+			Path:   "/api/v1/playlists",
+			Body:   createBody,
+		})
+		if err == nil && createResp.Success {
+			var plResp struct {
+				ID   int64  `json:"id"`
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(createResp.Body, &plResp) == nil {
+				playlistID = plResp.ID
+				playlistName = plResp.Name
+				slog.Info("新建歌单成功", "id", playlistID, "name", playlistName)
+			}
+		} else {
+			slog.Error("新建歌单失败", "name", request.NewPlaylistName, "error", err)
+		}
+	}
+
+	// 将成功导入的歌曲添加到歌单
+	if playlistID > 0 && len(importedSongIDs) > 0 {
+		addToPlaylistBody, _ := json.Marshal(map[string]interface{}{
+			"song_ids": importedSongIDs,
+		})
+		plSongsResp, err := hostFunctions.CallRouter(req.Context(), &pbplugin.CallRouterRequest{
+			Method: "POST",
+			Path:   fmt.Sprintf("/api/v1/playlists/%d/songs", playlistID),
+			Body:   addToPlaylistBody,
+		})
+		if err != nil || !plSongsResp.Success {
+			slog.Error("添加歌曲到歌单失败", "playlistID", playlistID, "error", err)
+		} else {
+			slog.Info("歌曲已添加到歌单", "playlistID", playlistID, "count", len(importedSongIDs))
 		}
 	}
 
@@ -285,10 +337,12 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 		"code": 0,
 		"msg":  "success",
 		"data": map[string]interface{}{
-			"total":   len(request.Songs),
-			"success": successCount,
-			"failed":  failedCount,
-			"results": results,
+			"total":         len(request.Songs),
+			"success":       successCount,
+			"failed":        failedCount,
+			"results":       results,
+			"playlist_id":   playlistID,
+			"playlist_name": playlistName,
 		},
 	}
 	body, _ := json.Marshal(response)

@@ -1,7 +1,8 @@
 // API 基础路径
 const API_BASE = '/api/v1/plugin/lxmusic/api';
+const MAIN_API = '/api/v1';
 
-// 当前状态
+// 状态
 let currentSources = [];
 let currentPlatforms = [];
 let searchResults = [];
@@ -9,64 +10,32 @@ let currentPage = 1;
 let totalResults = 0;
 let currentPlatformId = '';
 let currentKeyword = '';
+let playlists = [];
+let sourcesLoaded = false;
 
-/**
- * 从 localStorage 获取认证 Token
- */
+// 跨页持久选择
+const selectedSongs = new Map();
+
+// ============ 工具函数 ============
+
 function getAuthToken() {
     try {
-        var authData = localStorage.getItem('mimusic-auth');
+        const authData = localStorage.getItem('mimusic-auth');
         if (authData) {
-            var auth = JSON.parse(authData);
-            return auth.accessToken || '';
+            return JSON.parse(authData).accessToken || '';
         }
-    } catch (e) {
-        console.error('获取 Token 失败:', e);
-    }
+    } catch (e) {}
     return '';
 }
 
-/**
- * 获取认证头
- */
 function getAuthHeaders(isJson = true) {
-    var headers = {};
-    if (isJson) {
-        headers['Content-Type'] = 'application/json';
-    }
-    var token = getAuthToken();
-    if (token) {
-        headers['Authorization'] = 'Bearer ' + token;
-    }
+    const headers = {};
+    if (isJson) headers['Content-Type'] = 'application/json';
+    const token = getAuthToken();
+    if (token) headers['Authorization'] = 'Bearer ' + token;
     return headers;
 }
 
-/**
- * 显示 Toast 消息
- */
-function showToast(message, type = 'info') {
-    const toast = document.getElementById('toast');
-    toast.textContent = message;
-    toast.className = 'toast ' + type + ' show';
-    
-    setTimeout(() => {
-        toast.className = 'toast';
-    }, 3000);
-}
-
-/**
- * 格式化时长为 mm:ss
- */
-function formatDuration(seconds) {
-    if (!seconds || seconds <= 0) return '--:--';
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
-
-/**
- * HTML 转义
- */
 function escapeHtml(text) {
     if (!text) return '';
     const div = document.createElement('div');
@@ -74,532 +43,541 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function formatDuration(seconds) {
+    if (!seconds || seconds <= 0) return '--:--';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function getSongKey(song) {
+    return `${song.source}:${song.musicId || song.music_id || ''}`;
+}
+
+// ============ Snackbar ============
+
+let snackbarTimer = null;
+
+function showSnackbar(message, type = 'info', duration = 3000) {
+    const el = document.getElementById('snackbar');
+    if (snackbarTimer) clearTimeout(snackbarTimer);
+    el.textContent = message;
+    el.className = `snackbar ${type} show`;
+    snackbarTimer = setTimeout(() => { el.className = 'snackbar'; }, duration);
+}
+
+// ============ Dialog ============
+
+function showDialog(title, content) {
+    return new Promise((resolve) => {
+        document.getElementById('dialogTitle').textContent = title;
+        document.getElementById('dialogContent').textContent = content;
+        const overlay = document.getElementById('dialogOverlay');
+        overlay.style.display = 'flex';
+        document.getElementById('dialogConfirm').onclick = () => { hideDialog(); resolve(true); };
+        document.getElementById('dialogCancel').onclick = () => { hideDialog(); resolve(false); };
+    });
+}
+
+function hideDialog() {
+    document.getElementById('dialogOverlay').style.display = 'none';
+}
+
+// ============ Tab 切换 ============
+
+function initTabs() {
+    document.querySelectorAll('.tab-item').forEach(btn => {
+        btn.addEventListener('click', function () {
+            const tab = this.dataset.tab;
+            document.querySelectorAll('.tab-item').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            this.classList.add('active');
+            document.getElementById(`tab-${tab}`).classList.add('active');
+            if (tab === 'sources' && !sourcesLoaded) {
+                loadSources();
+                sourcesLoaded = true;
+            }
+        });
+    });
+}
+
 // ============ 平台管理 ============
 
-/**
- * 加载内置平台列表
- */
 async function loadPlatforms() {
     try {
-        const response = await fetch(`${API_BASE}/platforms`, {
-            headers: getAuthHeaders()
-        });
+        const response = await fetch(`${API_BASE}/platforms`, { headers: getAuthHeaders() });
         const result = await response.json();
-        
         if (result.code === 0) {
             currentPlatforms = result.data || [];
-            updatePlatformSelect();
+            renderPlatformSelect();
         } else {
-            showToast('加载平台列表失败: ' + (result.msg || '未知错误'), 'error');
+            showSnackbar('加载平台列表失败: ' + (result.msg || '未知错误'), 'error');
         }
-    } catch (error) {
-        console.error('加载平台列表失败:', error);
-        showToast('加载平台列表失败: ' + error.message, 'error');
+    } catch (e) {
+        showSnackbar('加载平台列表失败: ' + e.message, 'error');
     }
 }
 
-/**
- * 更新平台下拉选择
- */
-function updatePlatformSelect() {
+function renderPlatformSelect() {
     const select = document.getElementById('platformSelect');
     const searchBtn = document.getElementById('searchBtn');
-    
     if (currentPlatforms.length === 0) {
         select.innerHTML = '<option value="">暂无可用平台</option>';
         searchBtn.disabled = true;
     } else {
-        let html = '';
-        for (const platform of currentPlatforms) {
-            html += `<option value="${escapeHtml(platform.id)}">${escapeHtml(platform.name)}</option>`;
-        }
-        select.innerHTML = html;
+        select.innerHTML = currentPlatforms.map(p =>
+            `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`
+        ).join('');
         searchBtn.disabled = false;
     }
 }
 
+// ============ 歌单管理 ============
+
+async function loadPlaylists() {
+    try {
+        const resp = await fetch(`${MAIN_API}/playlists`, { headers: getAuthHeaders() });
+        const data = await resp.json();
+        playlists = data.playlists || data.data || data || [];
+        renderPlaylistSelect();
+    } catch (e) {
+        console.error('加载歌单失败:', e);
+    }
+}
+
+function renderPlaylistSelect() {
+    const select = document.getElementById('playlistSelect');
+    let html = '<option value="">不添加到歌单</option>';
+    if (Array.isArray(playlists)) {
+        for (const pl of playlists) {
+            html += `<option value="${pl.id}">${escapeHtml(pl.name)}</option>`;
+        }
+    }
+    html += '<option value="__new__">+ 新建歌单...</option>';
+    select.innerHTML = html;
+}
+
 // ============ 音源管理 ============
 
-/**
- * 加载音源列表
- */
 async function loadSources() {
+    const container = document.getElementById('sourceList');
+    container.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">hourglass_empty</span><p>加载中...</p></div>';
     try {
-        const response = await fetch(`${API_BASE}/sources`, {
-            headers: getAuthHeaders()
-        });
+        const response = await fetch(`${API_BASE}/sources`, { headers: getAuthHeaders() });
         const result = await response.json();
-        
         if (result.success) {
             currentSources = result.data || [];
             renderSources();
         } else {
-            showToast('加载音源失败: ' + (result.message || result.error || '未知错误'), 'error');
+            showSnackbar('加载音源失败: ' + (result.message || result.error || '未知错误'), 'error');
+            container.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败</p></div>';
         }
-    } catch (error) {
-        console.error('加载音源失败:', error);
-        showToast('加载音源失败: ' + error.message, 'error');
+    } catch (e) {
+        showSnackbar('加载音源失败: ' + e.message, 'error');
     }
 }
 
-/**
- * 渲染音源列表
- */
 function renderSources() {
     const container = document.getElementById('sourceList');
-    
     if (currentSources.length === 0) {
-        container.innerHTML = '<div class="empty-state"><div class="icon">📦</div><div>暂无音源，请导入音源脚本以获取播放 URL</div></div>';
+        container.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">inbox</span><p>暂无音源，请导入音源脚本以获取播放 URL</p></div>';
         return;
     }
-    
-    let html = '';
-    for (const source of currentSources) {
-        const checkedAttr = source.enabled ? 'checked' : '';
-        html += `
-            <div class="source-item" data-id="${escapeHtml(source.id)}">
-                <div class="source-info">
-                    <div class="source-name">${escapeHtml(source.name)}</div>
-                    <div class="source-meta">
-                        版本: ${escapeHtml(source.version || '-')} | 
-                        作者: ${escapeHtml(source.author || '-')} | 
-                        导入时间: ${source.imported_at ? new Date(source.imported_at).toLocaleString() : '-'}
-                    </div>
-                </div>
-                <div class="source-actions">
-                    <label class="toggle-switch" title="${source.enabled ? '已启用' : '已禁用'}">
-                        <input type="checkbox" ${checkedAttr} onchange="toggleSource('${escapeHtml(source.id)}', this.checked)">
-                        <span class="toggle-slider"></span>
-                    </label>
-                    <button class="btn btn-danger btn-small" onclick="deleteSource('${escapeHtml(source.id)}')">删除</button>
+    container.innerHTML = currentSources.map(source => `
+        <div class="list-item" data-id="${escapeHtml(source.id)}">
+            <div class="list-item-info">
+                <div class="list-item-title">${escapeHtml(source.name)}</div>
+                <div class="list-item-subtitle">
+                    版本: ${escapeHtml(source.version || '-')} &nbsp;|&nbsp;
+                    作者: ${escapeHtml(source.author || '-')} &nbsp;|&nbsp;
+                    ${source.imported_at ? new Date(source.imported_at).toLocaleString() : '-'}
                 </div>
             </div>
-        `;
-    }
-    container.innerHTML = html;
+            <div class="list-item-trailing">
+                <label class="md-switch" title="${source.enabled ? '已启用' : '已禁用'}">
+                    <input type="checkbox" ${source.enabled ? 'checked' : ''}
+                        onchange="toggleSource('${escapeHtml(source.id)}', this.checked)">
+                    <span class="switch-track"></span>
+                    <span class="switch-thumb"></span>
+                </label>
+                <button class="btn-icon danger" onclick="deleteSource('${escapeHtml(source.id)}')" title="删除">
+                    <span class="material-symbols-outlined">delete</span>
+                </button>
+            </div>
+        </div>
+    `).join('');
 }
 
-/**
- * 切换音源启用/禁用状态
- */
 async function toggleSource(id, enabled) {
     try {
         const response = await fetch(`${API_BASE}/sources/toggle`, {
             method: 'PUT',
             headers: getAuthHeaders(),
-            body: JSON.stringify({ id: id, enabled: enabled })
+            body: JSON.stringify({ id, enabled })
         });
         const result = await response.json();
-        
         if (result.success) {
-            showToast(enabled ? '音源已启用' : '音源已禁用', 'success');
-            // 更新本地状态
+            showSnackbar(enabled ? '音源已启用' : '音源已禁用', 'success');
             const source = currentSources.find(s => s.id === id);
-            if (source) {
-                source.enabled = enabled;
-            }
+            if (source) source.enabled = enabled;
         } else {
-            showToast('操作失败: ' + (result.message || result.error || '未知错误'), 'error');
-            // 恢复 checkbox 状态
+            showSnackbar('操作失败: ' + (result.message || result.error || '未知错误'), 'error');
             loadSources();
         }
-    } catch (error) {
-        console.error('切换音源状态失败:', error);
-        showToast('操作失败: ' + error.message, 'error');
-        // 恢复 checkbox 状态
+    } catch (e) {
+        showSnackbar('操作失败: ' + e.message, 'error');
         loadSources();
     }
 }
 
-/**
- * 导入音源
- */
 async function importSource(file) {
     const formData = new FormData();
     formData.append('file', file);
-    
+    const headers = {};
+    const token = getAuthToken();
+    if (token) headers['Authorization'] = 'Bearer ' + token;
     try {
-        showToast('正在导入...', 'info');
-        
-        const headers = {};
-        const token = getAuthToken();
-        if (token) {
-            headers['Authorization'] = 'Bearer ' + token;
-        }
-        
-        const response = await fetch(`${API_BASE}/sources/import`, {
-            method: 'POST',
-            headers: headers,
-            body: formData
-        });
+        showSnackbar('正在导入...', 'info');
+        const response = await fetch(`${API_BASE}/sources/import`, { method: 'POST', headers, body: formData });
         const result = await response.json();
-        
         if (result.success) {
-            showToast('导入成功', 'success');
+            showSnackbar('导入成功', 'success');
             loadSources();
         } else {
-            showToast('导入失败: ' + (result.message || result.error || '未知错误'), 'error');
+            showSnackbar('导入失败: ' + (result.message || result.error || '未知错误'), 'error');
         }
-    } catch (error) {
-        console.error('导入音源失败:', error);
-        showToast('导入失败: ' + error.message, 'error');
+    } catch (e) {
+        showSnackbar('导入失败: ' + e.message, 'error');
     }
 }
 
-/**
- * 从 URL 导入音源
- */
 async function importSourceFromURL(url) {
-    if (!url || !url.trim()) {
-        showToast('请输入音源 URL', 'warning');
-        return;
-    }
-    
-    // 验证 URL 格式
+    if (!url || !url.trim()) { showSnackbar('请输入音源 URL', 'warning'); return; }
     if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        showToast('URL 必须以 http:// 或 https:// 开头', 'warning');
-        return;
+        showSnackbar('URL 必须以 http:// 或 https:// 开头', 'warning'); return;
     }
-    
     try {
-        showToast('正在从 URL 导入...', 'info');
-        
+        showSnackbar('正在从 URL 导入...', 'info');
         const response = await fetch(`${API_BASE}/sources/import-url`, {
             method: 'POST',
             headers: getAuthHeaders(),
             body: JSON.stringify({ url: url.trim() })
         });
         const result = await response.json();
-        
         if (result.success) {
-            showToast('导入成功', 'success');
-            document.getElementById('sourceUrl').value = ''; // 清空输入框
+            showSnackbar('导入成功', 'success');
+            document.getElementById('sourceUrl').value = '';
             loadSources();
         } else {
-            showToast('导入失败: ' + (result.message || result.error || '未知错误'), 'error');
+            showSnackbar('导入失败: ' + (result.message || result.error || '未知错误'), 'error');
         }
-    } catch (error) {
-        console.error('从 URL 导入音源失败:', error);
-        showToast('导入失败: ' + error.message, 'error');
+    } catch (e) {
+        showSnackbar('导入失败: ' + e.message, 'error');
     }
 }
 
-/**
- * 删除音源
- */
 async function deleteSource(id) {
-    if (!confirm('确定要删除这个音源吗？')) {
-        return;
-    }
-    
+    const confirmed = await showDialog('确认删除', '确定要删除这个音源吗？删除后不可恢复。');
+    if (!confirmed) return;
     try {
         const response = await fetch(`${API_BASE}/sources?id=${encodeURIComponent(id)}`, {
             method: 'DELETE',
             headers: getAuthHeaders()
         });
         const result = await response.json();
-        
         if (result.success) {
-            showToast('删除成功', 'success');
+            showSnackbar('删除成功', 'success');
             loadSources();
         } else {
-            showToast('删除失败: ' + (result.message || result.error || '未知错误'), 'error');
+            showSnackbar('删除失败: ' + (result.message || result.error || '未知错误'), 'error');
         }
-    } catch (error) {
-        console.error('删除音源失败:', error);
-        showToast('删除失败: ' + error.message, 'error');
+    } catch (e) {
+        showSnackbar('删除失败: ' + e.message, 'error');
     }
 }
 
-// ============ 歌曲搜索 ============
+// ============ 搜索 ============
 
-/**
- * 搜索歌曲
- */
 async function search(keyword, platformId, page = 1) {
-    if (!keyword.trim()) {
-        showToast('请输入搜索关键词', 'warning');
-        return;
-    }
-    
-    if (!platformId) {
-        showToast('请选择平台', 'warning');
-        return;
-    }
-    
+    if (!keyword.trim()) { showSnackbar('请输入搜索关键词', 'warning'); return; }
+    if (!platformId) { showSnackbar('请选择平台', 'warning'); return; }
+
     currentKeyword = keyword;
     currentPlatformId = platformId;
     currentPage = page;
-    
+
     const searchBtn = document.getElementById('searchBtn');
     searchBtn.disabled = true;
-    searchBtn.innerHTML = '<span class="loading"></span>搜索中...';
-    
+    searchBtn.innerHTML = '<span class="spinner"></span>搜索中...';
+
     try {
-        const params = new URLSearchParams({
-            keyword: keyword,
-            source_id: platformId,
-            page: page
-        });
-        
-        const response = await fetch(`${API_BASE}/search?${params}`, {
-            headers: getAuthHeaders()
-        });
+        const params = new URLSearchParams({ keyword, source_id: platformId, page });
+        const response = await fetch(`${API_BASE}/search?${params}`, { headers: getAuthHeaders() });
         const result = await response.json();
-        
         if (result.code === 0) {
             searchResults = result.data.list || [];
             totalResults = result.data.total || 0;
             renderResults();
-            document.getElementById('resultSection').style.display = 'block';
+            document.getElementById('resultSection').style.display = '';
         } else {
-            showToast('搜索失败: ' + (result.msg || '未知错误'), 'error');
+            showSnackbar('搜索失败: ' + (result.msg || '未知错误'), 'error');
         }
-    } catch (error) {
-        console.error('搜索失败:', error);
-        showToast('搜索失败: ' + error.message, 'error');
+    } catch (e) {
+        showSnackbar('搜索失败: ' + e.message, 'error');
     } finally {
         searchBtn.disabled = false;
         searchBtn.textContent = '搜索';
     }
 }
 
-/**
- * 渲染搜索结果
- */
+// ============ 搜索结果渲染 ============
+
 function renderResults() {
     const container = document.getElementById('resultList');
-    const countEl = document.getElementById('resultCount');
-    
-    countEl.textContent = `(共 ${totalResults} 条)`;
-    
+    document.getElementById('resultCount').textContent = `共 ${totalResults} 条`;
+
     if (searchResults.length === 0) {
-        container.innerHTML = '<div class="empty-state"><div class="icon">🔍</div><div>没有找到相关歌曲</div></div>';
+        container.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">search_off</span><p>没有找到相关歌曲</p></div>';
+        renderPagination();
         return;
     }
-    
-    let html = '';
-    for (let i = 0; i < searchResults.length; i++) {
-        const song = searchResults[i];
-        html += `
-            <div class="result-item">
-                <input type="checkbox" class="result-checkbox" data-index="${i}" onchange="updateSelectedCount()">
+
+    container.innerHTML = searchResults.map((song, i) => {
+        const key = getSongKey(song);
+        const checked = selectedSongs.has(key) ? 'checked' : '';
+        const selectedClass = selectedSongs.has(key) ? ' selected' : '';
+        const imgHtml = song.img
+            ? `<img src="${escapeHtml(song.img)}" alt="" loading="lazy" onerror="this.parentNode.innerHTML='<span class=\\'material-symbols-outlined\\'>music_note</span>'">`
+            : '<span class="material-symbols-outlined">music_note</span>';
+        return `
+            <div class="result-item${selectedClass}" data-index="${i}">
+                <input type="checkbox" class="result-checkbox" data-index="${i}" ${checked}
+                    onchange="onSongCheckChanged(${i}, this.checked)" style="accent-color:var(--md-primary);width:18px;height:18px;cursor:pointer;flex-shrink:0">
+                <div class="result-thumb">${imgHtml}</div>
                 <div class="result-info">
                     <div class="result-name">${escapeHtml(song.name)}</div>
-                    <div class="result-meta">${escapeHtml(song.singer)} - ${escapeHtml(song.album || '未知专辑')}</div>
+                    <div class="result-meta">${escapeHtml(song.singer || '')}${song.album ? ' — ' + escapeHtml(song.album) : ''}</div>
                 </div>
                 <div class="result-duration">${formatDuration(song.duration)}</div>
             </div>
         `;
-    }
-    container.innerHTML = html;
-    
-    // 重置全选状态
-    document.getElementById('selectAll').checked = false;
+    }).join('');
+
+    // 同步全选状态
+    const allChecked = searchResults.every(s => selectedSongs.has(getSongKey(s)));
+    document.getElementById('selectAll').checked = allChecked && searchResults.length > 0;
+
     updateSelectedCount();
-    
-    // 渲染分页
     renderPagination();
 }
 
-/**
- * 渲染分页
- */
+function onSongCheckChanged(index, checked) {
+    const song = searchResults[index];
+    const key = getSongKey(song);
+    if (checked) selectedSongs.set(key, song);
+    else selectedSongs.delete(key);
+    // 更新行样式
+    const row = document.querySelector(`.result-item[data-index="${index}"]`);
+    if (row) row.classList.toggle('selected', checked);
+    updateSelectedCount();
+    // 检查全选状态
+    const allChecked = searchResults.every(s => selectedSongs.has(getSongKey(s)));
+    document.getElementById('selectAll').checked = allChecked;
+}
+
+function toggleSelectAll() {
+    const checked = document.getElementById('selectAll').checked;
+    searchResults.forEach(song => {
+        const key = getSongKey(song);
+        if (checked) selectedSongs.set(key, song);
+        else selectedSongs.delete(key);
+    });
+    renderResults();
+}
+
+function updateSelectedCount() {
+    const count = selectedSongs.size;
+    const badge = document.getElementById('selectedBadge');
+    if (badge) badge.textContent = count;
+    document.getElementById('importSongsBtn').disabled = count === 0;
+    document.getElementById('clearSelectionBtn').style.display = count > 0 ? '' : 'none';
+}
+
+function clearSelection() {
+    selectedSongs.clear();
+    renderResults();
+}
+
+// ============ 分页 ============
+
 function renderPagination() {
     const container = document.getElementById('pagination');
     const totalPages = Math.ceil(totalResults / 30);
-    
-    if (totalPages <= 1) {
-        container.innerHTML = '';
-        return;
-    }
-    
-    let html = `
-        <button ${currentPage <= 1 ? 'disabled' : ''} onclick="search('${escapeHtml(currentKeyword)}', '${escapeHtml(currentPlatformId)}', ${currentPage - 1})">上一页</button>
+    if (totalPages <= 1) { container.innerHTML = ''; return; }
+
+    container.innerHTML = `
+        <button class="btn-icon" title="上一页" ${currentPage <= 1 ? 'disabled' : ''}
+            onclick="search('${escapeHtml(currentKeyword)}','${escapeHtml(currentPlatformId)}',${currentPage - 1})">
+            <span class="material-symbols-outlined">chevron_left</span>
+        </button>
         <span class="page-info">第 ${currentPage} / ${totalPages} 页</span>
-        <button ${currentPage >= totalPages ? 'disabled' : ''} onclick="search('${escapeHtml(currentKeyword)}', '${escapeHtml(currentPlatformId)}', ${currentPage + 1})">下一页</button>
+        <input type="number" class="text-field page-jump" value="${currentPage}" min="1" max="${totalPages}"
+            onchange="jumpToPage(this.value, ${totalPages})">
+        <button class="btn-icon" title="下一页" ${currentPage >= totalPages ? 'disabled' : ''}
+            onclick="search('${escapeHtml(currentKeyword)}','${escapeHtml(currentPlatformId)}',${currentPage + 1})">
+            <span class="material-symbols-outlined">chevron_right</span>
+        </button>
     `;
-    container.innerHTML = html;
 }
 
-/**
- * 全选/反选
- */
-function toggleSelectAll() {
-    const checked = document.getElementById('selectAll').checked;
-    const checkboxes = document.querySelectorAll('.result-checkbox');
-    checkboxes.forEach(cb => cb.checked = checked);
-    updateSelectedCount();
-}
-
-/**
- * 更新已选数量
- */
-function updateSelectedCount() {
-    const checkboxes = document.querySelectorAll('.result-checkbox:checked');
-    const count = checkboxes.length;
-    document.getElementById('selectedCount').textContent = `已选 ${count} 首`;
-    document.getElementById('importSongsBtn').disabled = count === 0;
+function jumpToPage(val, totalPages) {
+    const page = Math.min(totalPages, Math.max(1, parseInt(val) || 1));
+    if (page !== currentPage) {
+        search(currentKeyword, currentPlatformId, page);
+    }
 }
 
 // ============ 批量导入 ============
 
-/**
- * 导入选中的歌曲
- */
 async function importSelectedSongs() {
-    const checkboxes = document.querySelectorAll('.result-checkbox:checked');
-    if (checkboxes.length === 0) {
-        showToast('请选择要导入的歌曲', 'warning');
-        return;
-    }
-    
-    // 获取选择的音质
+    const songs = Array.from(selectedSongs.values());
+    if (songs.length === 0) { showSnackbar('请选择要导入的歌曲', 'warning'); return; }
+
     const quality = document.getElementById('qualitySelect').value;
-    
-    const songs = [];
-    checkboxes.forEach(cb => {
-        const index = parseInt(cb.dataset.index);
-        const song = searchResults[index];
-        songs.push({
+    const playlistSelect = document.getElementById('playlistSelect');
+    let playlistId = 0;
+    let newPlaylistName = '';
+
+    if (playlistSelect.value === '__new__') {
+        newPlaylistName = document.getElementById('newPlaylistName').value.trim();
+        if (!newPlaylistName) { showSnackbar('请输入歌单名称', 'error'); return; }
+    } else if (playlistSelect.value) {
+        playlistId = parseInt(playlistSelect.value);
+    }
+
+    const progressSection = document.getElementById('importProgress');
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+    const importResultsEl = document.getElementById('importResults');
+
+    progressSection.style.display = '';
+    progressFill.style.width = '0%';
+    progressText.textContent = '正在导入...';
+    importResultsEl.innerHTML = '';
+
+    const importBtn = document.getElementById('importSongsBtn');
+    importBtn.disabled = true;
+    importBtn.innerHTML = '<span class="spinner"></span>导入中...';
+
+    const requestBody = {
+        songs: songs.map(song => ({
             name: song.name,
             singer: song.singer,
             album: song.album,
             source: song.source,
-            music_id: song.music_id,
+            musicId: song.musicId || song.music_id,
             img: song.img,
-            // 平台特有字段
             hash: song.hash,
             songmid: song.songmid,
             strMediaMid: song.strMediaMid,
             albumMid: song.albumMid,
             copyrightId: song.copyrightId,
-            albumId: song.albumId
-        });
-    });
-    
-    // 显示进度区域
-    const progressSection = document.getElementById('importProgress');
-    const progressFill = document.getElementById('progressFill');
-    const progressText = document.getElementById('progressText');
-    const importResults = document.getElementById('importResults');
-    
-    progressSection.style.display = 'block';
-    progressFill.style.width = '0%';
-    progressText.textContent = '正在导入...';
-    importResults.innerHTML = '';
-    
-    // 禁用导入按钮
-    const importBtn = document.getElementById('importSongsBtn');
-    importBtn.disabled = true;
-    importBtn.textContent = '导入中...';
-    
+            albumId: song.albumId,
+            duration: song.duration,
+            types: song.types
+        })),
+        quality,
+        playlist_id: playlistId,
+        new_playlist_name: newPlaylistName
+    };
+
     try {
-        console.log('Importing songs:', songs);
         const response = await fetch(`${API_BASE}/songs/import`, {
             method: 'POST',
             headers: getAuthHeaders(),
-            body: JSON.stringify({
-                songs: songs,
-                quality: quality
-            })
+            body: JSON.stringify(requestBody)
         });
         const result = await response.json();
-        
         if (result.code === 0) {
             const data = result.data;
             progressFill.style.width = '100%';
-            progressText.textContent = `导入完成: 成功 ${data.success} 首, 失败 ${data.failed} 首`;
-            
-            // 显示详细结果
-            let html = '';
-            for (const item of data.results) {
-                if (item.success) {
-                    html += `<div class="import-result-item success">✓ ${escapeHtml(item.name)}</div>`;
-                } else {
-                    html += `<div class="import-result-item error">✗ ${escapeHtml(item.name)}: ${escapeHtml(item.error)}</div>`;
-                }
-            }
-            importResults.innerHTML = html;
-            
+            progressText.textContent = `导入完成：成功 ${data.success} 首，失败 ${data.failed} 首`;
+            importResultsEl.innerHTML = (data.results || []).map(item =>
+                item.success
+                    ? `<div class="import-result-item success">✓ ${escapeHtml(item.name)}</div>`
+                    : `<div class="import-result-item error">✗ ${escapeHtml(item.name)}: ${escapeHtml(item.error)}</div>`
+            ).join('');
             if (data.success > 0) {
-                showToast(`成功导入 ${data.success} 首歌曲`, 'success');
-                console.log(`成功导入 ${data.success}歌曲`)
+                showSnackbar(`成功导入 ${data.success} 首歌曲`, 'success');
+                selectedSongs.clear();
+                updateSelectedCount();
+                loadPlaylists();
             }
-            if (data.failed > 0) {
-                showToast(`${data.failed} 首歌曲导入失败`, 'error');
-            }
+            if (data.failed > 0) showSnackbar(`${data.failed} 首歌曲导入失败`, 'error');
         } else {
             progressText.textContent = '导入失败: ' + (result.msg || '未知错误');
-            showToast('导入失败: ' + (result.msg || '未知错误'), 'error');
+            showSnackbar('导入失败: ' + (result.msg || '未知错误'), 'error');
         }
-    } catch (error) {
-        console.error('导入失败:', error);
-        progressText.textContent = '导入失败: ' + error.message;
-        showToast('导入失败: ' + error.message, 'error');
+    } catch (e) {
+        progressText.textContent = '导入失败: ' + e.message;
+        showSnackbar('导入失败: ' + e.message, 'error');
     } finally {
-        importBtn.disabled = false;
-        importBtn.textContent = '导入选中歌曲';
-        updateSelectedCount();
+        importBtn.disabled = selectedSongs.size === 0;
+        importBtn.innerHTML = `导入选中 <span id="selectedBadge" class="badge">${selectedSongs.size}</span>`;
     }
 }
 
 // ============ 初始化 ============
 
-document.addEventListener('DOMContentLoaded', function() {
-    // 加载内置平台列表
+document.addEventListener('DOMContentLoaded', function () {
+    initTabs();
     loadPlatforms();
-    
-    // 加载音源列表
-    loadSources();
-    
-    // 导入音源按钮
-    document.getElementById('importBtn').addEventListener('click', function() {
+    loadPlaylists();
+
+    // 导入音源文件
+    document.getElementById('importBtn').addEventListener('click', () => {
         document.getElementById('sourceFile').click();
     });
-    
-    // 文件选择
-    document.getElementById('sourceFile').addEventListener('change', function(e) {
+    document.getElementById('sourceFile').addEventListener('change', function (e) {
         const file = e.target.files[0];
-        if (file) {
-            importSource(file);
-            e.target.value = ''; // 清空以允许重复选择同一文件
-        }
+        if (file) { importSource(file); e.target.value = ''; }
     });
-    
-    // 从 URL 导入按钮
-    document.getElementById('importUrlBtn').addEventListener('click', function() {
-        const url = document.getElementById('sourceUrl').value;
-        importSourceFromURL(url);
+
+    // 从 URL 导入音源
+    document.getElementById('importUrlBtn').addEventListener('click', () => {
+        importSourceFromURL(document.getElementById('sourceUrl').value);
     });
-    
-    // URL 输入框回车导入
-    document.getElementById('sourceUrl').addEventListener('keypress', function(e) {
+    document.getElementById('sourceUrl').addEventListener('keypress', function (e) {
+        if (e.key === 'Enter') importSourceFromURL(this.value);
+    });
+
+    // 搜索
+    document.getElementById('searchBtn').addEventListener('click', () => {
+        search(document.getElementById('keyword').value, document.getElementById('platformSelect').value, 1);
+    });
+    document.getElementById('keyword').addEventListener('keypress', function (e) {
         if (e.key === 'Enter') {
-            const url = document.getElementById('sourceUrl').value;
-            importSourceFromURL(url);
+            search(this.value, document.getElementById('platformSelect').value, 1);
         }
     });
-    
-    // 搜索按钮
-    document.getElementById('searchBtn').addEventListener('click', function() {
-        const keyword = document.getElementById('keyword').value;
-        const platformId = document.getElementById('platformSelect').value;
-        search(keyword, platformId, 1);
-    });
-    
-    // 回车搜索
-    document.getElementById('keyword').addEventListener('keypress', function(e) {
-        if (e.key === 'Enter') {
-            const keyword = document.getElementById('keyword').value;
-            const platformId = document.getElementById('platformSelect').value;
-            search(keyword, platformId, 1);
-        }
-    });
-    
+
     // 全选
     document.getElementById('selectAll').addEventListener('change', toggleSelectAll);
-    
-    // 导入歌曲按钮
+
+    // 导入歌曲
     document.getElementById('importSongsBtn').addEventListener('click', importSelectedSongs);
+
+    // 清除选择
+    document.getElementById('clearSelectionBtn').addEventListener('click', clearSelection);
+
+    // 歌单选择变化
+    document.getElementById('playlistSelect').addEventListener('change', function () {
+        const wrapper = document.getElementById('newPlaylistWrapper');
+        wrapper.style.display = this.value === '__new__' ? 'flex' : 'none';
+    });
+
+    // Dialog 点击遮罩关闭
+    document.getElementById('dialogOverlay').addEventListener('click', function (e) {
+        if (e.target === this) hideDialog();
+    });
 });
