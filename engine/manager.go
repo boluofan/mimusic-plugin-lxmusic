@@ -4,9 +4,14 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	"sort"
+	"sync/atomic"
+
+	"github.com/mimusic-org/plugin/api/pbplugin"
 )
 
 // RuntimeManager 管理所有已加载的音源运行时
@@ -59,14 +64,12 @@ func (rm *RuntimeManager) GetRuntime(sourceID string) (*SourceRuntime, bool) {
 	return sr, ok
 }
 
-// GetMusicUrl 多源轮询获取播放 URL
+// GetMusicUrl 多源并行获取播放 URL
 // 1. 收集所有支持该 platform 的已加载 runtime
-// 2. 随机打乱顺序（math/rand）
-// 3. 轮询调用：
-//   - 只有 1 个源：重试 3 次
-//   - 多个源：每个源各试 1 次
-//
-// 4. 成功即返回 URL，全部失败返回错误
+// 2. 按成功率降序排序
+// 3. 构建并行 JS 调用请求
+// 4. 调用 ExecuteJSParallel（窗口并发 maxConcurrent=3）
+// 5. 解析首个成功结果，更新成功率统计
 func (rm *RuntimeManager) GetMusicUrl(platform, quality string, musicInfo map[string]interface{}) (string, error) {
 	// 1. 收集所有支持该 platform 的 runtime
 	var candidates []*SourceRuntime
@@ -80,62 +83,151 @@ func (rm *RuntimeManager) GetMusicUrl(platform, quality string, musicInfo map[st
 		return "", fmt.Errorf("no source supports platform: %s", platform)
 	}
 
-	// 2. 随机打乱顺序
-	rand.Shuffle(len(candidates), func(i, j int) {
-		candidates[i], candidates[j] = candidates[j], candidates[i]
+	// 2. 按成功率降序排序
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].SuccessRate() > candidates[j].SuccessRate()
 	})
 
-	var lastErr error
+	slog.Info("GetMusicUrl: 开始并行获取",
+		"platform", platform,
+		"quality", quality,
+		"candidateCount", len(candidates))
 
-	// 3. 轮询调用
-	if len(candidates) == 1 {
-		// 只有 1 个源：重试 3 次
-		sr := candidates[0]
-		const maxRetries = 3
-		for i := 0; i < maxRetries; i++ {
-			slog.Info("GetMusicUrl: 尝试获取",
-				"sourceID", sr.SourceID(),
-				"platform", platform,
-				"quality", quality,
-				"attempt", i+1,
-				"maxRetries", maxRetries)
+	// 3. 为每个 candidate 构建 JS 调用请求
+	info := map[string]interface{}{
+		"musicInfo": musicInfo,
+		"type":      quality,
+	}
+	payload := map[string]interface{}{
+		"source": platform,
+		"action": "musicUrl",
+		"info":   info,
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal payload: %w", err)
+	}
 
-			url, err := sr.GetMusicUrl(platform, quality, musicInfo)
-			if err == nil && url != "" {
-				slog.Info("GetMusicUrl: 成功获取 URL", "sourceID", sr.SourceID(), "attempt", i+1)
-				return url, nil
-			}
-			lastErr = err
-			slog.Warn("GetMusicUrl: 尝试失败",
-				"sourceID", sr.SourceID(),
-				"attempt", i+1,
-				"error", err)
+	calls := make([]*pbplugin.ExecuteJSRequest, len(candidates))
+	requestIDs := make([]string, len(candidates))
+	for i, sr := range candidates {
+		requestID := fmt.Sprintf("req_%d", atomic.AddUint64(&requestIDCounter, 1))
+		requestIDs[i] = requestID
+
+		code := fmt.Sprintf(`lx._dispatch(%s, "request", %s);`, jsonString(requestID), string(payloadJSON))
+
+		calls[i] = &pbplugin.ExecuteJSRequest{
+			EnvId:          sr.EnvID(),
+			Code:           code,
+			TimeoutMs:      30000,
+			PluginId:       sr.PluginID(),
+			WaitEventNames: []string{"dispatchResult", "dispatchError"},
 		}
-	} else {
-		// 多个源：每个源各试 1 次
+
+		slog.Info("GetMusicUrl: 构建调用",
+			"index", i,
+			"sourceID", sr.SourceID(),
+			"envID", sr.EnvID(),
+			"requestID", requestID,
+			"successRate", fmt.Sprintf("%.2f", sr.SuccessRate()))
+	}
+
+	// 4. 调用 ExecuteJSParallel
+	hostFunctions := pbplugin.NewHostFunctions()
+	resp, err := hostFunctions.ExecuteJSParallel(context.Background(), &pbplugin.ExecuteJSParallelRequest{
+		Calls:         calls,
+		MaxConcurrent: 3,
+	})
+	if err != nil {
+		// 所有音源标记失败
 		for _, sr := range candidates {
-			slog.Info("GetMusicUrl: 尝试获取",
-				"sourceID", sr.SourceID(),
-				"platform", platform,
-				"quality", quality)
+			sr.RecordFailure()
+		}
+		return "", fmt.Errorf("ExecuteJSParallel failed: %w", err)
+	}
 
-			url, err := sr.GetMusicUrl(platform, quality, musicInfo)
-			if err == nil && url != "" {
-				slog.Info("GetMusicUrl: 成功获取 URL", "sourceID", sr.SourceID())
-				return url, nil
+	// 5. 更新成功率统计
+	successIdx := int(resp.GetSuccessIndex())
+	for i, sr := range candidates {
+		if i == successIdx {
+			sr.RecordSuccess()
+		} else {
+			// 对于失败的和未执行的（后续批次被跳过的），都记录失败
+			errMsg := ""
+			if i < len(resp.GetErrors()) {
+				errMsg = resp.GetErrors()[i]
 			}
-			lastErr = err
-			slog.Warn("GetMusicUrl: 尝试失败",
-				"sourceID", sr.SourceID(),
-				"error", err)
+			if errMsg != "" {
+				sr.RecordFailure()
+			}
+			// 未执行的（errMsg 为空且非成功索引）不记录，保持原有成功率
 		}
 	}
 
-	// 4. 全部失败
-	if lastErr != nil {
-		return "", fmt.Errorf("all %d sources failed for platform %s: %w", len(candidates), platform, lastErr)
+	// 6. 解析成功结果
+	if !resp.GetSuccess() || successIdx < 0 {
+		errMsgs := resp.GetErrors()
+		return "", fmt.Errorf("all %d sources failed for platform %s, errors: %v", len(candidates), platform, errMsgs)
 	}
-	return "", fmt.Errorf("all %d sources failed for platform %s", len(candidates), platform)
+
+	// 从成功结果的 events 中提取 URL
+	result := resp.GetResult()
+	if result == nil {
+		return "", fmt.Errorf("success result is nil")
+	}
+
+	url, err := extractURLFromEvents(result.GetEvents(), requestIDs[successIdx])
+	if err != nil {
+		return "", fmt.Errorf("extract URL from events: %w", err)
+	}
+
+	slog.Info("GetMusicUrl: 成功获取 URL",
+		"sourceID", candidates[successIdx].SourceID(),
+		"successIndex", successIdx)
+	return url, nil
+}
+
+// extractURLFromEvents 从 JS 执行事件中提取播放 URL
+func extractURLFromEvents(events []*pbplugin.JSEvent, requestID string) (string, error) {
+	for _, evt := range events {
+		switch evt.GetName() {
+		case "dispatchResult":
+			var result struct {
+				ID     string      `json:"id"`
+				Result interface{} `json:"result"`
+			}
+			if err := json.Unmarshal([]byte(evt.GetData()), &result); err != nil {
+				continue
+			}
+			if result.ID != requestID {
+				continue
+			}
+			// 解析 URL
+			switch v := result.Result.(type) {
+			case string:
+				if v != "" {
+					return v, nil
+				}
+			case map[string]interface{}:
+				if url, ok := v["url"].(string); ok && url != "" {
+					return url, nil
+				}
+			}
+			return "", fmt.Errorf("dispatchResult has empty or invalid URL")
+		case "dispatchError":
+			var errResult struct {
+				ID    string `json:"id"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(evt.GetData()), &errResult); err != nil {
+				continue
+			}
+			if errResult.ID == requestID {
+				return "", fmt.Errorf("dispatch error: %s", errResult.Error)
+			}
+		}
+	}
+	return "", fmt.Errorf("no matching dispatch event found for request %s", requestID)
 }
 
 // LoadedSources 返回所有已加载的源 ID 列表

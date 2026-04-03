@@ -27,10 +27,12 @@ func nextRequestID() string {
 // SourceRuntime 单个音源的持久化运行时
 // 通过 proto 接口与主程序的 cqjs JS 运行时通信
 type SourceRuntime struct {
-	sourceID string
-	envID    string // cqjs 环境 ID
-	config   *SourceConfig
-	pluginID int64
+	sourceID     string
+	envID        string // cqjs 环境 ID
+	config       *SourceConfig
+	pluginID     int64
+	totalCalls   uint64 // 总调用次数（atomic 操作）
+	successCalls uint64 // 成功次数（atomic 操作）
 }
 
 // NewSourceRuntime 创建并初始化一个音源运行时
@@ -291,6 +293,37 @@ func (sr *SourceRuntime) Config() *SourceConfig {
 // SourceID 返回音源 ID
 func (sr *SourceRuntime) SourceID() string {
 	return sr.sourceID
+}
+
+// EnvID 返回 JS 环境 ID
+func (sr *SourceRuntime) EnvID() string {
+	return sr.envID
+}
+
+// PluginID 返回插件 ID
+func (sr *SourceRuntime) PluginID() int64 {
+	return sr.pluginID
+}
+
+// RecordSuccess 记录一次成功调用
+func (sr *SourceRuntime) RecordSuccess() {
+	atomic.AddUint64(&sr.totalCalls, 1)
+	atomic.AddUint64(&sr.successCalls, 1)
+}
+
+// RecordFailure 记录一次失败调用
+func (sr *SourceRuntime) RecordFailure() {
+	atomic.AddUint64(&sr.totalCalls, 1)
+}
+
+// SuccessRate 返回成功率 [0.0, 1.0]，无调用记录时返回 0.5（中性值，不影响排序）
+func (sr *SourceRuntime) SuccessRate() float64 {
+	total := atomic.LoadUint64(&sr.totalCalls)
+	if total == 0 {
+		return 0.5
+	}
+	success := atomic.LoadUint64(&sr.successCalls)
+	return float64(success) / float64(total)
 }
 
 // Close 关闭并清理运行时资源
