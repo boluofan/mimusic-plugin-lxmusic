@@ -12,8 +12,9 @@ import (
 	"strings"
 
 	"mimusic-plugin-lxmusic/engine"
-	"mimusic-plugin-lxmusic/musicsdk"
 	"mimusic-plugin-lxmusic/urlmap"
+
+	"github.com/mimusic-org/musicsdk"
 
 	"github.com/mimusic-org/plugin/api/pbplugin"
 	"github.com/mimusic-org/plugin/api/plugin"

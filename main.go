@@ -11,9 +11,10 @@ import (
 
 	"mimusic-plugin-lxmusic/engine"
 	"mimusic-plugin-lxmusic/handlers"
-	"mimusic-plugin-lxmusic/musicsdk"
 	"mimusic-plugin-lxmusic/source"
 	"mimusic-plugin-lxmusic/urlmap"
+
+	"github.com/mimusic-org/musicsdk"
 
 	"github.com/knqyf263/go-plugin/types/known/emptypb"
 	"github.com/mimusic-org/plugin/api/pbplugin"
@@ -81,19 +82,19 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 
 	// 4. 初始化 musicsdk Registry 并注册 5 个平台搜索器
 	p.registry = musicsdk.NewRegistry()
-	p.registry.Register(musicsdk.NewKgSearcher()) // 酷狗音乐
-	p.registry.Register(musicsdk.NewKwSearcher()) // 酷我音乐
-	p.registry.Register(musicsdk.NewTxSearcher()) // QQ音乐
-	p.registry.Register(musicsdk.NewWySearcher()) // 网易云音乐
-	p.registry.Register(musicsdk.NewMgSearcher()) // 咪咕音乐
+	p.registry.Register(musicsdk.NewKgSearcher())
+	p.registry.Register(musicsdk.NewKwSearcher())
+	p.registry.Register(musicsdk.NewTxSearcher())
+	p.registry.Register(musicsdk.NewWySearcher())
+	p.registry.Register(musicsdk.NewMgSearcher())
 	slog.Info("已注册内置平台搜索器", "count", 5)
 
 	// 注册 5 个平台歌词获取器
-	p.registry.RegisterLyricFetcher(musicsdk.NewKgLyricFetcher()) // 酷狗音乐
-	p.registry.RegisterLyricFetcher(musicsdk.NewKwLyricFetcher()) // 酷我音乐
-	p.registry.RegisterLyricFetcher(musicsdk.NewTxLyricFetcher()) // QQ音乐
-	p.registry.RegisterLyricFetcher(musicsdk.NewWyLyricFetcher()) // 网易云音乐
-	p.registry.RegisterLyricFetcher(musicsdk.NewMgLyricFetcher()) // 咪咕音乐
+	p.registry.RegisterLyricFetcher(musicsdk.NewKgLyricFetcher())
+	p.registry.RegisterLyricFetcher(musicsdk.NewKwLyricFetcher())
+	p.registry.RegisterLyricFetcher(musicsdk.NewTxLyricFetcher())
+	p.registry.RegisterLyricFetcher(musicsdk.NewWyLyricFetcher())
+	p.registry.RegisterLyricFetcher(musicsdk.NewMgLyricFetcher())
 	slog.Info("已注册内置平台歌词获取器", "count", 5)
 
 	// 5. 初始化 urlmap.Store
