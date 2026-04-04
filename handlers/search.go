@@ -219,12 +219,13 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 		var batchBody []map[string]interface{}
 		for _, item := range batch {
 			body := map[string]interface{}{
-				"title":     item.song.Name,
-				"artist":    item.song.Singer,
-				"album":     item.song.Album,
-				"url":       item.musicUrl,
-				"cover_url": item.song.Img,
-				"duration":  float64(item.song.Duration),
+				"title":      item.song.Name,
+				"artist":     item.song.Singer,
+				"album":      item.song.Album,
+				"url":        item.musicUrl,
+				"cover_url":  item.song.Img,
+				"duration":   float64(item.song.Duration),
+				"cache_hash": item.hash,
 			}
 			batchBody = append(batchBody, body)
 		}
