@@ -110,6 +110,16 @@ jobs:
           HOMEPAGE="${{ steps.plugin_info.outputs.homepage }}"
           BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
+          # 删除该 issue 下包含 lxmusic.wasm.zip 的旧评论
+          EXISTING_COMMENT_IDS=$(gh api \
+            repos/mimusic-org/mimusic/issues/4/comments \
+            --paginate \
+            --jq '.[] | select(.body | contains("lxmusic.wasm.zip")) | .id')
+          for COMMENT_ID in $EXISTING_COMMENT_IDS; do
+            echo "Deleting old comment: ${COMMENT_ID}"
+            gh api --method DELETE repos/mimusic-org/mimusic/issues/comments/${COMMENT_ID}
+          done
+
           COMMENT=$(cat <<EOF
           ## 插件更新
 
