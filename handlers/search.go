@@ -219,13 +219,15 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 		var batchBody []map[string]interface{}
 		for _, item := range batch {
 			body := map[string]interface{}{
-				"title":      item.song.Name,
-				"artist":     item.song.Singer,
-				"album":      item.song.Album,
-				"url":        item.musicUrl,
-				"cover_url":  item.song.Img,
-				"duration":   float64(item.song.Duration),
-				"cache_hash": item.hash,
+				"title":        item.song.Name,
+				"artist":       item.song.Singer,
+				"album":        item.song.Album,
+				"url":          item.musicUrl,
+				"cover_url":    item.song.Img,
+				"duration":     float64(item.song.Duration),
+				"cache_hash":   item.hash,
+				"lyric_source": "url",
+				"lyric":        "/api/v1/plugin/lxmusic/api/lyric/url/" + item.hash,
 			}
 			batchBody = append(batchBody, body)
 		}
@@ -275,14 +277,12 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 				successCount++
 				slog.Info("歌曲导入成功", "name", item.song.Name, "hash", item.hash)
 
-				// 第三步：获取歌词并更新（导入成功后）
+				// 第三步：收集成功导入的歌曲 ID（歌词改为延迟加载）
 				if i < len(addResp.Songs) {
 					songID := addResp.Songs[i].ID
 					if songID > 0 {
 						importedSongIDs = append(importedSongIDs, songID)
 					}
-					slog.Info("准备获取歌词", "songID", songID, "source", item.song.Source, "songInfo_musicId", item.songInfo["musicId"])
-					h.fetchAndUpdateLyric(req, hostFunctions, songID, item.song.Source, item.songInfo)
 				}
 			}
 		}
@@ -403,6 +403,108 @@ func (h *SearchHandler) fetchAndUpdateLyric(req *http.Request, hostFunctions pbp
 	}
 
 	slog.Info("歌词更新成功", "songID", songID, "source", source)
+}
+
+// HandleGetLyric 通过 hash 获取歌词（延迟加载 + 缓存写回）
+// GET /lxmusic/api/lyric/url/{hash}
+// 流程：
+// 1. 通过 cache_hash 查主程序 DB 中的歌曲
+// 2. 如果 lyric_source != "url"（已缓存），直接返回 lyric 文本
+// 3. 如果 lyric_source == "url"，从平台获取歌词，写回 DB，返回歌词
+func (h *SearchHandler) HandleGetLyric(req *http.Request) (*plugin.RouterResponse, error) {
+	// 1. 从 URL path 提取 hash
+	path := req.URL.Path
+	hash := path[strings.LastIndex(path, "/")+1:]
+	if hash == "" {
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 hash 参数"), nil
+	}
+
+	hostFunctions := pbplugin.NewHostFunctions()
+
+	// 2. 查主程序 DB：GET /api/v1/songs?cache_hash={hash}&limit=1
+	queryPath := "/api/v1/songs?cache_hash=" + hash + "&limit=1"
+	songResp, err := hostFunctions.CallRouter(req.Context(), &pbplugin.CallRouterRequest{
+		Method: "GET",
+		Path:   queryPath,
+	})
+
+	if err == nil && songResp.Success {
+		var listResp struct {
+			Songs []struct {
+				ID          int64  `json:"id"`
+				Lyric       string `json:"lyric"`
+				LyricSource string `json:"lyric_source"`
+			} `json:"songs"`
+		}
+		if json.Unmarshal(songResp.Body, &listResp) == nil && len(listResp.Songs) > 0 {
+			song := listResp.Songs[0]
+
+			// 3. 已缓存：lyric_source 不是 "url"，直接返回歌词文本
+			if song.LyricSource != "url" {
+				return h.lyricResponse(song.Lyric), nil
+			}
+
+			// 4. 未缓存：从平台获取歌词
+			mapping, exists := h.urlmapStore.Get(hash)
+			if !exists {
+				return plugin.ErrorResponse(http.StatusNotFound, "URL mapping not found"), nil
+			}
+
+			fetcher, ok := h.registry.GetLyricFetcher(mapping.Platform)
+			if !ok {
+				return plugin.ErrorResponse(http.StatusBadRequest, "platform does not support lyric fetching"), nil
+			}
+
+			result, err := fetcher.GetLyric(mapping.SongInfo)
+			if err != nil {
+				return plugin.ErrorResponse(http.StatusInternalServerError, "failed to fetch lyric: "+err.Error()), nil
+			}
+
+			// 5. 写回 DB：PUT /api/v1/songs/{id}/lyrics
+			if result.Lyric != "" && song.ID > 0 {
+				lyricPayload, _ := json.Marshal(map[string]string{
+					"lyrics":       result.Lyric,
+					"lyric_source": "cached",
+				})
+				_, _ = hostFunctions.CallRouter(req.Context(), &pbplugin.CallRouterRequest{
+					Method: "PUT",
+					Path:   fmt.Sprintf("/api/v1/songs/%d/lyrics", song.ID),
+					Body:   lyricPayload,
+				})
+			}
+
+			return h.lyricResponse(result.Lyric), nil
+		}
+	}
+
+	// 回退：DB 中没有对应歌曲记录，直接从平台获取（不写回）
+	mapping, exists := h.urlmapStore.Get(hash)
+	if !exists {
+		return plugin.ErrorResponse(http.StatusNotFound, "URL mapping not found"), nil
+	}
+	fetcher, ok := h.registry.GetLyricFetcher(mapping.Platform)
+	if !ok {
+		return plugin.ErrorResponse(http.StatusBadRequest, "platform does not support lyric fetching"), nil
+	}
+	result, err := fetcher.GetLyric(mapping.SongInfo)
+	if err != nil {
+		return plugin.ErrorResponse(http.StatusInternalServerError, "failed to fetch lyric: "+err.Error()), nil
+	}
+	return h.lyricResponse(result.Lyric), nil
+}
+
+// lyricResponse 构建歌词 JSON 响应
+func (h *SearchHandler) lyricResponse(lyric string) *plugin.RouterResponse {
+	response := map[string]interface{}{
+		"code": 0,
+		"data": map[string]string{"lyric": lyric},
+	}
+	body, _ := json.Marshal(response)
+	return &plugin.RouterResponse{
+		StatusCode: http.StatusOK,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Body:       body,
+	}
 }
 
 // HandleGetMusicUrl 获取播放 URL（通过 hash 查找）

@@ -143,6 +143,9 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	// 获取播放 URL（不需要认证，主程序播放时直接调用）
 	routerManager.RegisterRouter(ctx, "GET", "/lxmusic/api/music/url/{hash}", p.searchHandler.HandleGetMusicUrl, false)
 
+	// 获取歌词（不需要认证，延迟加载时主程序直接调用）
+	routerManager.RegisterRouter(ctx, "GET", "/lxmusic/api/lyric/url/{hash}", p.searchHandler.HandleGetLyric, false)
+
 	slog.Info("洛雪音源插件路由注册完成")
 	return &emptypb.Empty{}, nil
 }
