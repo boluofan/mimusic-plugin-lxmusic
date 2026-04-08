@@ -16,13 +16,15 @@ import (
 
 // RuntimeManager 管理所有已加载的音源运行时
 type RuntimeManager struct {
-	runtimes map[string]*SourceRuntime // sourceID → runtime
+	runtimes      map[string]*SourceRuntime   // sourceID → runtime
+	platformIndex map[string][]*SourceRuntime // platform → 支持该平台的 runtime 列表（反向索引）
 }
 
 // NewRuntimeManager 创建新的 RuntimeManager
 func NewRuntimeManager() *RuntimeManager {
 	return &RuntimeManager{
-		runtimes: make(map[string]*SourceRuntime),
+		runtimes:      make(map[string]*SourceRuntime),
+		platformIndex: make(map[string][]*SourceRuntime),
 	}
 }
 
@@ -39,6 +41,7 @@ func (rm *RuntimeManager) LoadSource(sourceID string, script string, pluginID in
 	}
 
 	rm.runtimes[sourceID] = sr
+	rm.addToPlatformIndex(sr)
 	slog.Info("RuntimeManager: 音源已加载", "sourceID", sourceID)
 	return nil
 }
@@ -46,6 +49,7 @@ func (rm *RuntimeManager) LoadSource(sourceID string, script string, pluginID in
 // UnloadSource 卸载音源运行时
 func (rm *RuntimeManager) UnloadSource(sourceID string) {
 	if sr, exists := rm.runtimes[sourceID]; exists {
+		rm.removeFromPlatformIndex(sr)
 		sr.Close()
 		delete(rm.runtimes, sourceID)
 		slog.Info("RuntimeManager: 音源已卸载", "sourceID", sourceID)
@@ -71,13 +75,8 @@ func (rm *RuntimeManager) GetRuntime(sourceID string) (*SourceRuntime, bool) {
 // 4. 调用 ExecuteJSParallel（窗口并发 maxConcurrent=3）
 // 5. 解析首个成功结果，更新成功率统计
 func (rm *RuntimeManager) GetMusicUrl(platform, quality string, musicInfo map[string]interface{}) (string, error) {
-	// 1. 收集所有支持该 platform 的 runtime
-	var candidates []*SourceRuntime
-	for _, sr := range rm.runtimes {
-		if sr.SupportsPlatform(platform) {
-			candidates = append(candidates, sr)
-		}
-	}
+	// 1. 从平台索引中获取支持该 platform 的 runtime
+	candidates := rm.platformIndex[platform]
 
 	if len(candidates) == 0 {
 		return "", fmt.Errorf("no source supports platform: %s", platform)
@@ -250,11 +249,41 @@ func (rm *RuntimeManager) Count() int {
 	return len(rm.runtimes)
 }
 
+// addToPlatformIndex 将 runtime 添加到其支持的所有平台索引中
+func (rm *RuntimeManager) addToPlatformIndex(sr *SourceRuntime) {
+	if sr.Config() == nil || sr.Config().Sources == nil {
+		return
+	}
+	for platform := range sr.Config().Sources {
+		rm.platformIndex[platform] = append(rm.platformIndex[platform], sr)
+	}
+}
+
+// removeFromPlatformIndex 从所有平台索引中移除指定 runtime
+func (rm *RuntimeManager) removeFromPlatformIndex(sr *SourceRuntime) {
+	if sr.Config() == nil || sr.Config().Sources == nil {
+		return
+	}
+	for platform := range sr.Config().Sources {
+		list := rm.platformIndex[platform]
+		for i, r := range list {
+			if r.SourceID() == sr.SourceID() {
+				rm.platformIndex[platform] = append(list[:i], list[i+1:]...)
+				break
+			}
+		}
+		if len(rm.platformIndex[platform]) == 0 {
+			delete(rm.platformIndex, platform)
+		}
+	}
+}
+
 // Close 关闭所有运行时
 func (rm *RuntimeManager) Close() {
 	for id, sr := range rm.runtimes {
 		sr.Close()
 		delete(rm.runtimes, id)
 	}
+	rm.platformIndex = make(map[string][]*SourceRuntime)
 	slog.Info("RuntimeManager: 所有运行时已关闭")
 }
