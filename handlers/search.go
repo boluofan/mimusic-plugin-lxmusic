@@ -576,6 +576,7 @@ func (h *SearchHandler) HandleGetLyric(req *http.Request) (*plugin.RouterRespons
 }
 
 // lyricResponse 构建歌词 JSON 响应
+// 歌词一旦获取就不会变化（首次从平台获取后写回 DB），因此使用永久缓存头
 func (h *SearchHandler) lyricResponse(lyric string) *plugin.RouterResponse {
 	response := map[string]interface{}{
 		"code": 0,
@@ -584,8 +585,11 @@ func (h *SearchHandler) lyricResponse(lyric string) *plugin.RouterResponse {
 	body, _ := json.Marshal(response)
 	return &plugin.RouterResponse{
 		StatusCode: http.StatusOK,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       body,
+		Headers: map[string]string{
+			"Content-Type":  "application/json",
+			"Cache-Control": "public, max-age=31536000, immutable",
+		},
+		Body: body,
 	}
 }
 

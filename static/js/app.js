@@ -89,6 +89,10 @@ function initTabs() {
     document.querySelectorAll('.tab-item').forEach(btn => {
         btn.addEventListener('click', function () {
             const tab = this.dataset.tab;
+            // 推入历史记录（popstate 触发时跳过）
+            if (!window._isPopState) {
+                history.pushState({ tab: tab }, '', '#' + tab);
+            }
             document.querySelectorAll('.tab-item').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             this.classList.add('active');
@@ -99,6 +103,28 @@ function initTabs() {
             }
         });
     });
+}
+
+/**
+ * 切换到指定 Tab（供 popstate 回调使用）
+ * @param {string} tab - Tab ID: 'search', 'songlist', 'sources'
+ */
+function switchToTab(tab) {
+    document.querySelectorAll('.tab-item').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    const btn = document.querySelector(`.tab-item[data-tab="${tab}"]`);
+    if (btn) btn.classList.add('active');
+    const content = document.getElementById(`tab-${tab}`);
+    if (content) content.classList.add('active');
+    // 如果切回 songlist tab，恢复列表视图（而非详情）
+    if (tab === 'songlist') {
+        const detailCard = document.getElementById('slDetailCard');
+        if (detailCard) detailCard.style.display = 'none';
+        const listCard = document.getElementById('slListCard');
+        if (listCard) listCard.style.display = '';
+        const tagCard = document.getElementById('slTagCard');
+        if (tagCard) tagCard.style.display = '';
+    }
 }
 
 // ============ 平台管理 ============
@@ -533,6 +559,23 @@ async function importSelectedSongs() {
 // ============ 初始化 ============
 
 document.addEventListener('DOMContentLoaded', function () {
+    // 设置初始历史状态（使用 replaceState 避免多余条目）
+    history.replaceState({ tab: 'search' }, '', '#search');
+
+    // 监听浏览器返回/前进，恢复对应 Tab/子页面
+    window.addEventListener('popstate', (event) => {
+        if (event.state && event.state.tab) {
+            window._isPopState = true;
+            if (event.state.detail) {
+                // 返回到歌单详情（前进时）
+                slOpenDetail(event.state.detail);
+            } else {
+                switchToTab(event.state.tab);
+            }
+            window._isPopState = false;
+        }
+    });
+
     initTabs();
     loadPlatforms();
     loadPlaylists();
@@ -940,6 +983,10 @@ function slPageNav(page) {
 }
 
 async function slOpenDetail(id) {
+    // 推入子页面历史记录
+    if (!window._isPopState) {
+        history.pushState({ tab: 'songlist', detail: id }, '', '#songlist-detail');
+    }
     const detailCard = document.getElementById('slDetailCard');
     const listCard = document.getElementById('slListCard');
     const tagCard = document.getElementById('slTagCard');
@@ -1144,6 +1191,11 @@ function slToggleTagCard() {
 }
 
 function slBackToList() {
+    // 通过 history.back() 触发 popstate 来返回，避免重复 pushState
+    if (!window._isPopState) {
+        history.back();
+        return;
+    }
     document.getElementById('slDetailCard').style.display = 'none';
     if (slCurrentMode === 'recommend') {
         document.getElementById('slListCard').style.display = '';
