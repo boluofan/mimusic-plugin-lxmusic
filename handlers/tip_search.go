@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/mimusic-org/plugin/api/plugin"
 	pluginhttp "github.com/mimusic-org/plugin/pkg/go-plugin-http/http"
@@ -19,6 +20,11 @@ type TipSearchHandler struct{}
 // NewTipSearchHandler 创建搜索联想处理器
 func NewTipSearchHandler() *TipSearchHandler {
 	return &TipSearchHandler{}
+}
+
+// isTVRequest 检查请求是否为TV模式（根据路径前缀 /tv/ 判断）
+func (h *TipSearchHandler) isTVRequest(req *http.Request) bool {
+	return strings.HasPrefix(req.URL.Path, "/tv/")
 }
 
 // HandleTipSearch 获取搜索联想
@@ -42,6 +48,16 @@ func (h *TipSearchHandler) HandleTipSearch(req *http.Request) (*plugin.RouterRes
 	if err != nil {
 		slog.Error("获取酷我搜索联想失败", "name", name, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取搜索联想失败: "+err.Error()), nil
+	}
+
+	// TV模式返回lxserver原始格式
+	if h.isTVRequest(req) {
+		body, _ := json.Marshal(list)
+		return &plugin.RouterResponse{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       body,
+		}, nil
 	}
 
 	response := map[string]interface{}{

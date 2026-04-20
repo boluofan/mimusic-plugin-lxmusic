@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"crypto/aes"
+	"crypto/cipher"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
@@ -11,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +31,11 @@ type LeaderboardHandler struct{}
 // NewLeaderboardHandler 创建排行榜处理器
 func NewLeaderboardHandler() *LeaderboardHandler {
 	return &LeaderboardHandler{}
+}
+
+// isTVRequest 检查请求是否为TV模式（根据路径前缀 /tv/ 判断）
+func (h *LeaderboardHandler) isTVRequest(req *http.Request) bool {
+	return strings.HasPrefix(req.URL.Path, "/tv/")
 }
 
 // BoardItem 排行榜分类项
@@ -86,6 +94,20 @@ func (h *LeaderboardHandler) HandleGetBoards(req *http.Request) (*plugin.RouterR
 	if err != nil {
 		slog.Error("获取排行榜分类失败", "source", source, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取排行榜分类失败: "+err.Error()), nil
+	}
+
+	// TV模式返回lxserver原始格式
+	if h.isTVRequest(req) {
+		response := map[string]interface{}{
+			"source": source,
+			"list":   boards,
+		}
+		body, _ := json.Marshal(response)
+		return &plugin.RouterResponse{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       body,
+		}, nil
 	}
 
 	response := map[string]interface{}{
@@ -187,13 +209,18 @@ func (h *LeaderboardHandler) getKgBoards() ([]BoardItem, error) {
 		return nil, fmt.Errorf("API 返回错误: errcode=%v", errcode)
 	}
 
-	info, ok := rawData["info"].([]interface{})
+	data, ok := rawData["data"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("info 格式错误")
+		return nil, fmt.Errorf("data 格式错误")
+	}
+
+	ranklist, ok := data["ranklist"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("ranklist 格式错误")
 	}
 
 	boards := make([]BoardItem, 0)
-	for _, item := range info {
+	for _, item := range ranklist {
 		m := item.(map[string]interface{})
 		isvol, _ := m["isvol"].(float64)
 		if isvol != 1 {
@@ -211,66 +238,34 @@ func (h *LeaderboardHandler) getKgBoards() ([]BoardItem, error) {
 	return boards, nil
 }
 
-// getTxBoards 获取QQ音乐排行榜分类（动态获取）
+// getTxBoards 获取QQ音乐排行榜分类（硬编码）
 func (h *LeaderboardHandler) getTxBoards() ([]BoardItem, error) {
-	urlStr := "https://c.y.qq.com/v8/fcg-bin/fcg_myqq_toplist.fcg?g_tk=1928093487&inCharset=utf-8&outCharset=utf-8&notice=0&format=json&uin=0&needNewCode=1&platform=h5"
-
-	resp, err := pluginhttp.Get(urlStr)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP 请求失败: %w", err)
+	// 参考 lxserver，硬编码 QQ 音乐排行榜
+	boards := []BoardItem{
+		{ID: "tx__4", Name: "流行指数榜", BangID: "4"},
+		{ID: "tx__26", Name: "热歌榜", BangID: "26"},
+		{ID: "tx__27", Name: "新歌榜", BangID: "27"},
+		{ID: "tx__62", Name: "飙升榜", BangID: "62"},
+		{ID: "tx__58", Name: "说唱榜", BangID: "58"},
+		{ID: "tx__57", Name: "电音榜", BangID: "57"},
+		{ID: "tx__28", Name: "网络歌曲榜", BangID: "28"},
+		{ID: "tx__5", Name: "内地榜", BangID: "5"},
+		{ID: "tx__3", Name: "欧美榜", BangID: "3"},
+		{ID: "tx__59", Name: "香港地区榜", BangID: "59"},
+		{ID: "tx__16", Name: "韩国榜", BangID: "16"},
+		{ID: "tx__60", Name: "抖音热歌榜", BangID: "60"},
+		{ID: "tx__29", Name: "影视金曲榜", BangID: "29"},
+		{ID: "tx__17", Name: "日本榜", BangID: "17"},
+		{ID: "tx__36", Name: "K歌金曲榜", BangID: "36"},
+		{ID: "tx__61", Name: "台湾地区榜", BangID: "61"},
+		{ID: "tx__63", Name: "DJ舞曲榜", BangID: "63"},
+		{ID: "tx__64", Name: "综艺新歌榜", BangID: "64"},
+		{ID: "tx__65", Name: "国风热歌榜", BangID: "65"},
+		{ID: "tx__67", Name: "听歌识曲榜", BangID: "67"},
+		{ID: "tx__72", Name: "动漫音乐榜", BangID: "72"},
+		{ID: "tx__73", Name: "游戏音乐榜", BangID: "73"},
+		{ID: "tx__75", Name: "有声榜", BangID: "75"},
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP 状态码错误: %d", resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应体失败: %w", err)
-	}
-
-	var rawData map[string]interface{}
-	if err := json.Unmarshal(body, &rawData); err != nil {
-		return nil, fmt.Errorf("解析响应 JSON 失败: %w", err)
-	}
-
-	data, ok := rawData["data"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("data 格式错误")
-	}
-
-	topList, ok := data["topList"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("topList 格式错误")
-	}
-
-	boards := make([]BoardItem, 0, len(topList))
-	for _, item := range topList {
-		m := item.(map[string]interface{})
-		id := h.getString(m["id"])
-		topTitle := h.getString(m["topTitle"])
-
-		// 排除 MV 榜
-		if id == "201" {
-			continue
-		}
-
-		// 处理标题
-		if strings.HasPrefix(topTitle, "巅峰榜·") {
-			topTitle = topTitle[4:]
-		}
-		if !strings.HasSuffix(topTitle, "榜") {
-			topTitle += "榜"
-		}
-
-		boards = append(boards, BoardItem{
-			ID:     "tx__" + id,
-			Name:   topTitle,
-			BangID: id,
-		})
-	}
-
 	return boards, nil
 }
 
@@ -325,29 +320,20 @@ func (h *LeaderboardHandler) getMgBoards() ([]BoardItem, error) {
 		if !ok {
 			continue
 		}
-		itemList, ok := groupMap["itemList"].([]interface{})
+		items, ok := groupMap["contents"].([]interface{})
 		if !ok {
 			continue
 		}
-		for _, item := range itemList {
+		for _, item := range items {
 			m, ok := item.(map[string]interface{})
 			if !ok {
 				continue
 			}
-			actionURL := h.getString(m["actionUrl"])
-			if !strings.Contains(actionURL, "rank-info") {
+			rankID := h.getString(m["rankId"])
+			if rankID == "" {
 				continue
 			}
-			displayLogID, ok := m["displayLogId"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			param, ok := displayLogID["param"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-			rankID := h.getString(param["rankId"])
-			rankName := h.decodeName(param["rankName"])
+			rankName := h.decodeName(m["rankName"])
 			boards = append(boards, BoardItem{
 				ID:     "mg__" + rankID,
 				Name:   rankName,
@@ -367,9 +353,13 @@ func (h *LeaderboardHandler) HandleGetList(req *http.Request) (*plugin.RouterRes
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
 
+	// TV模式使用bangid参数，默认使用boardId
 	boardID := req.URL.Query().Get("boardId")
 	if boardID == "" {
-		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 boardId 参数"), nil
+		boardID = req.URL.Query().Get("bangid")
+	}
+	if boardID == "" {
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 boardId/bangid 参数"), nil
 	}
 
 	page, _ := strconv.Atoi(req.URL.Query().Get("page"))
@@ -419,6 +409,23 @@ func (h *LeaderboardHandler) HandleGetList(req *http.Request) (*plugin.RouterRes
 	if err != nil {
 		slog.Error("获取排行榜歌曲失败", "source", source, "boardId", boardID, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取排行榜歌曲失败: "+err.Error()), nil
+	}
+
+	// TV模式返回lxserver原始格式
+	if h.isTVRequest(req) {
+		response := map[string]interface{}{
+			"source": source,
+			"total":  total,
+			"list":   list,
+			"limit":  100,
+			"page":   page,
+		}
+		body, _ := json.Marshal(response)
+		return &plugin.RouterResponse{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       body,
+		}, nil
 	}
 
 	response := map[string]interface{}{
@@ -746,20 +753,392 @@ func (h *LeaderboardHandler) parseTxTypes(file map[string]interface{}) []Quality
 
 // getTxPeriod 获取QQ音乐排行榜period（简化实现）
 func (h *LeaderboardHandler) getTxPeriod(bangID string) string {
-	// 实际应该从HTML页面解析，这里返回空字符串使用默认period
-	return ""
+	// 从QQ音乐网页爬取period信息
+	urlStr := "https://c.y.qq.com/node/pc/wk_v15/top.html"
+
+	resp, err := pluginhttp.Get(urlStr)
+	if err != nil {
+		slog.Warn("getTxPeriod: 请求失败", "error", err)
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		slog.Warn("getTxPeriod: HTTP状态码错误", "status", resp.StatusCode)
+		return ""
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		slog.Warn("getTxPeriod: 读取响应失败", "error", err)
+		return ""
+	}
+
+	html := string(body)
+
+	// 解析period列表
+	// 格式: data-listname="xxx" data-tid="top/27" data-date="2026-04-19"
+	periodRegex := regexp.MustCompile(`data-listname="[^"]*" data-tid="[^/]*/` + bangID + `" data-date="([^"]+)"`)
+	matches := periodRegex.FindStringSubmatch(html)
+	if len(matches) < 2 {
+		slog.Warn("getTxPeriod: 未找到匹配的period", "bangID", bangID)
+		return ""
+	}
+
+	period := matches[1]
+	slog.Info("getTxPeriod: 找到period", "bangID", bangID, "period", period)
+	return period
 }
 
-// getWyBoardList 获取网易云排行榜歌曲（通过JS runtime使用weapi加密）
+// getWyBoardList 获取网易云排行榜歌曲（使用weapi加密）
 func (h *LeaderboardHandler) getWyBoardList(bangID string, page int) ([]SongItem, int, error) {
-	// 网易云需要weapi加密，通过JS runtime调用
-	return h.getWyBoardListFromJS(bangID)
+	// 使用 weapi 加密调用网易云 API
+	params, encSecKey, err := h.weapiEncrypt(map[string]interface{}{
+		"id": bangID,
+		"n":  100000,
+		"p":  1,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("weapi加密失败: %w", err)
+	}
+
+	// 发送请求
+	formData := url.Values{}
+	formData.Set("params", params)
+	formData.Set("encSecKey", encSecKey)
+
+	req, err := pluginhttp.NewRequest("POST", "https://music.163.com/weapi/v3/playlist/detail", strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil, 0, fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := pluginhttp.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("HTTP 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, 0, fmt.Errorf("HTTP 状态码错误: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("读取响应体失败: %w", err)
+	}
+
+	var rawData map[string]interface{}
+	if err := json.Unmarshal(body, &rawData); err != nil {
+		return nil, 0, fmt.Errorf("解析响应 JSON 失败: %w", err)
+	}
+
+	code, _ := rawData["code"].(float64)
+	if code != 200 {
+		return nil, 0, fmt.Errorf("API 返回错误: code=%v", code)
+	}
+
+	playlist, ok := rawData["playlist"].(map[string]interface{})
+	if !ok {
+		return nil, 0, fmt.Errorf("playlist 格式错误")
+	}
+
+	trackIds, ok := playlist["trackIds"].([]interface{})
+	if !ok {
+		return nil, 0, fmt.Errorf("trackIds 格式错误")
+	}
+
+	// 获取歌曲详情（批量获取）
+	ids := make([]int64, 0, len(trackIds))
+	for _, t := range trackIds {
+		if tid, ok := t.(map[string]interface{}); ok {
+			if id, ok := tid["id"].(float64); ok {
+				ids = append(ids, int64(id))
+			}
+		}
+	}
+
+	// 获取歌曲详细信息
+	songs, err := h.getWySongDetails(ids)
+	if err != nil {
+		return nil, 0, fmt.Errorf("获取歌曲详情失败: %w", err)
+	}
+
+	list := make([]SongItem, 0, len(songs))
+	for _, song := range songs {
+		list = append(list, song)
+	}
+
+	return list, len(list), nil
+}
+
+// getWySongDetails 批量获取网易云歌曲详情
+func (h *LeaderboardHandler) getWySongDetails(ids []int64) ([]SongItem, error) {
+	if len(ids) == 0 {
+		return []SongItem{}, nil
+	}
+
+	// 网易云歌曲详情 API，每次最多获取1000首
+	const batchSize = 1000
+	allSongs := make([]SongItem, 0)
+
+	for i := 0; i < len(ids); i += batchSize {
+		end := i + batchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batchIds := ids[i:end]
+
+		songs, err := h.getWySongDetailsBatch(batchIds)
+		if err != nil {
+			slog.Warn("getWySongDetails: 批量获取失败", "error", err, "start", i, "end", end)
+			continue
+		}
+		allSongs = append(allSongs, songs...)
+	}
+
+	return allSongs, nil
+}
+
+// getWySongDetailsBatch 批量获取网易云歌曲详情（单次最多1000首）
+func (h *LeaderboardHandler) getWySongDetailsBatch(ids []int64) ([]SongItem, error) {
+	if len(ids) == 0 {
+		return []SongItem{}, nil
+	}
+
+	// 构建 c 参数： [{"id":3368793123},{"id":3370116562},...]
+	cParts := make([]string, len(ids))
+	for i, id := range ids {
+		cParts[i] = fmt.Sprintf(`{"id":%d}`, id)
+	}
+	cStr := "[" + strings.Join(cParts, ",") + "]"
+
+	// 构建 ids 参数： [3368793123,3370116562,...]
+	idsStr := "["
+	for i, id := range ids {
+		if i > 0 {
+			idsStr += ","
+		}
+		idsStr += fmt.Sprintf("%d", id)
+	}
+	idsStr += "]"
+
+	params, encSecKey, err := h.weapiEncrypt(map[string]interface{}{
+		"c":   cStr,
+		"ids": idsStr,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("weapi加密失败: %w", err)
+	}
+
+	slog.Info("getWySongDetailsBatch: 请求歌曲详情", "idsCount", len(ids), "cStrLen", len(cStr), "idsStrLen", len(idsStr))
+
+	formData := url.Values{}
+	formData.Set("params", params)
+	formData.Set("encSecKey", encSecKey)
+
+	req, err := pluginhttp.NewRequest("POST", "https://music.163.com/weapi/v3/song/detail", strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := pluginhttp.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取响应体失败: %w", err)
+	}
+
+	slog.Info("getWySongDetailsBatch: 响应长度", "len", len(body))
+
+	var rawData map[string]interface{}
+	if err := json.Unmarshal(body, &rawData); err != nil {
+		slog.Error("getWySongDetailsBatch: JSON解析失败", "error", err, "bodyLen", len(body))
+		if len(body) > 0 {
+			bodyStr := string(body)
+			if len(bodyStr) > 500 {
+				bodyStr = bodyStr[:500]
+			}
+			slog.Info("getWySongDetailsBatch: body前500字符", "body", bodyStr)
+		}
+		return nil, fmt.Errorf("解析响应 JSON 失败: %w", err)
+	}
+
+	code, _ := rawData["code"].(float64)
+	slog.Info("getWySongDetailsBatch: code", "code", code)
+
+	if code != 200 {
+		bodyStr := string(body)
+		if len(bodyStr) > 500 {
+			bodyStr = bodyStr[:500]
+		}
+		slog.Error("getWySongDetailsBatch: API错误", "code", code, "body", bodyStr)
+		return nil, fmt.Errorf("API 返回错误: code=%v", code)
+	}
+
+	songs, ok := rawData["songs"].([]interface{})
+	if !ok {
+		slog.Error("getWySongDetailsBatch: songs字段解析失败", "rawData", rawData)
+		return []SongItem{}, nil
+	}
+
+	slog.Info("getWySongDetailsBatch: 获取到歌曲数", "count", len(songs))
+
+	list := make([]SongItem, 0, len(songs))
+	for _, s := range songs {
+		song, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		item := SongItem{
+			Name:   h.decodeName(song["name"]),
+			Source: "wy",
+			Lrc:    nil,
+		}
+
+		// 解析歌手
+		if singers, ok := song["ar"].([]interface{}); ok {
+			var singerNames []string
+			for _, singer := range singers {
+				if s, ok := singer.(map[string]interface{}); ok {
+					singerNames = append(singerNames, h.decodeName(s["name"]))
+				}
+			}
+			item.Singer = strings.Join(singerNames, "、")
+		}
+
+		// 解析专辑
+		if album, ok := song["al"].(map[string]interface{}); ok {
+			item.AlbumName = h.decodeName(album["name"])
+			if albumMid, ok := album["id"].(float64); ok {
+				item.AlbumID = fmt.Sprintf("%.0f", albumMid)
+			}
+			if imgs, ok := album["picUrl"].(string); ok && imgs != "" {
+				item.Img = imgs
+			}
+		}
+
+		// 解析时长
+		if dt, ok := song["dt"].(float64); ok {
+			item.Interval = h.formatPlayTime(int(dt / 1000))
+		}
+
+		// 解析歌曲ID
+		if id, ok := song["id"].(float64); ok {
+			item.SongMID = fmt.Sprintf("%.0f", id)
+		}
+
+		list = append(list, item)
+	}
+
+	return list, nil
+}
+
+// weapiEncrypt 网易云 weapi 加密
+func (h *LeaderboardHandler) weapiEncrypt(object interface{}) (params string, encSecKey string, err error) {
+	text, err := json.Marshal(object)
+	if err != nil {
+		return "", "", fmt.Errorf("marshal: %w", err)
+	}
+
+	secKey := randomString(16)
+
+	// 第一次 AES-CBC 加密
+	encText, err := h.aesCBCEncrypt(string(text), "0CoJUm6Qyw8W8jud", "0102030405060708")
+	if err != nil {
+		return "", "", fmt.Errorf("first aes: %w", err)
+	}
+
+	// 第二次 AES-CBC 加密
+	params, err = h.aesCBCEncrypt(encText, secKey, "0102030405060708")
+	if err != nil {
+		return "", "", fmt.Errorf("second aes: %w", err)
+	}
+
+	// RSA 加密 secKey
+	encSecKey = h.rsaEncrypt(secKey)
+
+	return params, encSecKey, nil
+}
+
+// randomString 生成随机字符串
+func randomString(size int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, size)
+	for i := range b {
+		b[i] = letters[i%len(letters)]
+	}
+	return string(b)
+}
+
+// pkcs7Pad PKCS7 填充
+func pkcs7Pad(data []byte, blockSize int) []byte {
+	padding := blockSize - len(data)%blockSize
+	padtext := make([]byte, padding)
+	for i := range padtext {
+		padtext[i] = byte(padding)
+	}
+	return append(data, padtext...)
+}
+
+// aesCBCEncrypt AES-128-CBC 加密
+func (h *LeaderboardHandler) aesCBCEncrypt(text, key, iv string) (string, error) {
+	keyBytes := []byte(key)
+	ivBytes := []byte(iv)
+	srcBytes := []byte(text)
+
+	block, err := aes.NewCipher(keyBytes)
+	if err != nil {
+		return "", err
+	}
+
+	srcBytes = pkcs7Pad(srcBytes, block.BlockSize())
+	blockMode := cipher.NewCBCEncrypter(block, ivBytes)
+	crypted := make([]byte, len(srcBytes))
+	blockMode.CryptBlocks(crypted, srcBytes)
+
+	return base64.StdEncoding.EncodeToString(crypted), nil
+}
+
+// rsaEncrypt RSA 加密（网易云 weapi 使用）
+func (h *LeaderboardHandler) rsaEncrypt(text string) string {
+	pubKey := "010001"
+	modulus := "00e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b725152b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ecbda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d813cfe4875d3e82047b97ddef52741d546b8e289dc6935b3ece0462db0a22b8e7"
+
+	// 反转字符串
+	runes := []rune(text)
+	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+		runes[i], runes[j] = runes[j], runes[i]
+	}
+	text = string(runes)
+
+	// hex 编码
+	hexText := hex.EncodeToString([]byte(text))
+
+	// 大数运算
+	biText := new(big.Int)
+	biText.SetString(hexText, 16)
+
+	biPub := new(big.Int)
+	biPub.SetString(pubKey, 16)
+
+	biMod := new(big.Int)
+	biMod.SetString(modulus, 16)
+
+	biRet := new(big.Int).Exp(biText, biPub, biMod)
+
+	return fmt.Sprintf("%0256x", biRet)
 }
 
 // getWyBoardsFromJS 通过JS runtime获取网易云排行榜分类
 func (h *LeaderboardHandler) getWyBoardsFromJS() ([]BoardItem, error) {
-	// 由于weapi加密复杂，这里返回常用榜单的硬编码列表
-	// 实际生产环境应通过JS runtime调用
+	// 参考 lxserver，硬编码网易云排行榜列表
 	return []BoardItem{
 		{ID: "wy__19723756", Name: "飙升榜", BangID: "19723756"},
 		{ID: "wy__3779629", Name: "新歌榜", BangID: "3779629"},
@@ -768,17 +1147,31 @@ func (h *LeaderboardHandler) getWyBoardsFromJS() ([]BoardItem, error) {
 		{ID: "wy__991319590", Name: "说唱榜", BangID: "991319590"},
 		{ID: "wy__71384707", Name: "古典榜", BangID: "71384707"},
 		{ID: "wy__1978921795", Name: "电音榜", BangID: "1978921795"},
+		{ID: "wy__5453912201", Name: "黑胶VIP爱听榜", BangID: "5453912201"},
 		{ID: "wy__71385702", Name: "ACG榜", BangID: "71385702"},
 		{ID: "wy__745956260", Name: "韩语榜", BangID: "745956260"},
+		{ID: "wy__10520166", Name: "国电榜", BangID: "10520166"},
+		{ID: "wy__180106", Name: "UK排行榜周榜", BangID: "180106"},
+		{ID: "wy__60198", Name: "美国Billboard榜", BangID: "60198"},
+		{ID: "wy__3812895", Name: "Beatport全球电子舞曲榜", BangID: "3812895"},
+		{ID: "wy__21845217", Name: "KTV唛榜", BangID: "21845217"},
+		{ID: "wy__60131", Name: "日本Oricon榜", BangID: "60131"},
+		{ID: "wy__2809513713", Name: "欧美热歌榜", BangID: "2809513713"},
+		{ID: "wy__2809577409", Name: "欧美新歌榜", BangID: "2809577409"},
+		{ID: "wy__3001835560", Name: "ACG动画榜", BangID: "3001835560"},
+		{ID: "wy__3001795926", Name: "ACG游戏榜", BangID: "3001795926"},
+		{ID: "wy__3001890046", Name: "ACG VOCALOID榜", BangID: "3001890046"},
+		{ID: "wy__3112516681", Name: "中国新乡村音乐排行榜", BangID: "3112516681"},
+		{ID: "wy__5059644681", Name: "日语榜", BangID: "5059644681"},
+		{ID: "wy__5059633707", Name: "摇滚榜", BangID: "5059633707"},
 		{ID: "wy__5059642708", Name: "国风榜", BangID: "5059642708"},
+		{ID: "wy__5338990334", Name: "潜力爆款榜", BangID: "5338990334"},
+		{ID: "wy__5059661515", Name: "民谣榜", BangID: "5059661515"},
+		{ID: "wy__6688069460", Name: "听歌识曲榜", BangID: "6688069460"},
+		{ID: "wy__6723173524", Name: "网络热歌榜", BangID: "6723173524"},
+		{ID: "wy__6732051320", Name: "俄语榜", BangID: "6732051320"},
+		{ID: "wy__6886768100", Name: "中文DJ榜", BangID: "6886768100"},
 	}, nil
-}
-
-// getWyBoardListFromJS 通过JS runtime获取网易云排行榜歌曲
-func (h *LeaderboardHandler) getWyBoardListFromJS(bangID string) ([]SongItem, int, error) {
-	// 由于weapi加密实现复杂，这里返回空列表
-	// 实际生产环境应通过JS runtime调用weapi加密的API
-	return []SongItem{}, 0, nil
 }
 
 // getMgBoardList 获取咪咕排行榜歌曲
@@ -829,36 +1222,40 @@ func (h *LeaderboardHandler) getMgBoardList(bangID string, page int) ([]SongItem
 		}
 
 		song := SongItem{
-			Name:     h.decodeName(objInfo["name"]),
-			Source:   "mg",
-			Interval: h.formatPlayTime(h.getInt(objInfo["duration"])),
-			Lrc:      nil,
+			Name:   h.decodeName(objInfo["songName"]),
+			Source: "mg",
+			Lrc:    nil,
 		}
 
-		// 解析歌手
-		singers, _ := objInfo["singer"].([]interface{})
-		var singerNames []string
-		for _, s := range singers {
-			if singer, ok := s.(map[string]interface{}); ok {
-				singerNames = append(singerNames, h.decodeName(singer["name"]))
+		// 解析时长 - mg 的 length 是 "03:45" 格式
+		if length, ok := objInfo["length"].(string); ok {
+			song.Interval = length
+		}
+
+		// 解析歌手 - mg 的 artists 是数组
+		if artists, ok := objInfo["artists"].([]interface{}); ok {
+			var singerNames []string
+			for _, a := range artists {
+				if artist, ok := a.(map[string]interface{}); ok {
+					singerNames = append(singerNames, h.decodeName(artist["name"]))
+				}
 			}
+			song.Singer = strings.Join(singerNames, "、")
 		}
-		song.Singer = strings.Join(singerNames, "、")
 
-		// 解析专辑
-		if album, ok := objInfo["album"].(map[string]interface{}); ok {
-			song.AlbumName = h.decodeName(album["name"])
-			song.AlbumID = h.getString(album["id"])
+		// 解析专辑 - mg 的 album 是字符串
+		if album, ok := objInfo["album"].(string); ok {
+			song.AlbumName = h.decodeName(album)
 		}
 
 		// 解析图片
-		if imgItems, ok := objInfo["imgItems"].([]interface{}); ok && len(imgItems) > 0 {
+		if imgItems, ok := objInfo["albumImgs"].([]interface{}); ok && len(imgItems) > 0 {
 			if img, ok := imgItems[0].(map[string]interface{}); ok {
-				song.Img = h.getString(img["url"])
+				song.Img = h.getString(img["img"])
 			}
 		}
 
-		// 解析音质
+		// 解析音质 - mg 的 newRateFormats
 		song.Types = h.parseMgTypes(objInfo)
 
 		list = append(list, song)
@@ -871,15 +1268,30 @@ func (h *LeaderboardHandler) getMgBoardList(bangID string, page int) ([]SongItem
 func (h *LeaderboardHandler) parseMgTypes(objInfo map[string]interface{}) []QualityItem {
 	var result []QualityItem
 
-	// 咪咕的音质信息在不同字段中
-	if newGrade, ok := objInfo["newGrade"].(string); ok {
-		switch newGrade {
-		case "SQ":
-			result = append(result, QualityItem{Type: "flac", Size: ""})
-		case "HQ":
-			result = append(result, QualityItem{Type: "320k", Size: ""})
-		case "LC":
-			result = append(result, QualityItem{Type: "128k", Size: ""})
+	// 咪咕的音质信息在 newRateFormats 字段中
+	// formatType: PQ=128k, HQ=320k, SQ=flac, ZQ=flac24bit
+	if rateFormats, ok := objInfo["newRateFormats"].([]interface{}); ok {
+		for _, rf := range rateFormats {
+			if format, ok := rf.(map[string]interface{}); ok {
+				formatType := h.getString(format["formatType"])
+				var size int64
+				if s, ok := format["size"].(float64); ok {
+					size = int64(s)
+				} else if s, ok := format["androidSize"].(float64); ok {
+					size = int64(s)
+				}
+				sizeStr := h.sizeFormate(size)
+				switch formatType {
+				case "PQ":
+					result = append(result, QualityItem{Type: "128k", Size: sizeStr})
+				case "HQ":
+					result = append(result, QualityItem{Type: "320k", Size: sizeStr})
+				case "SQ":
+					result = append(result, QualityItem{Type: "flac", Size: sizeStr})
+				case "ZQ":
+					result = append(result, QualityItem{Type: "flac24bit", Size: sizeStr})
+				}
+			}
 		}
 	}
 

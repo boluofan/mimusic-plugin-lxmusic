@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/mimusic-org/plugin/api/plugin"
 	pluginhttp "github.com/mimusic-org/plugin/pkg/go-plugin-http/http"
@@ -18,6 +19,11 @@ type HotSearchHandler struct{}
 // NewHotSearchHandler 创建热搜处理器
 func NewHotSearchHandler() *HotSearchHandler {
 	return &HotSearchHandler{}
+}
+
+// isTVRequest 检查请求是否为TV模式（根据路径前缀 /tv/ 判断）
+func (h *HotSearchHandler) isTVRequest(req *http.Request) bool {
+	return strings.HasPrefix(req.URL.Path, "/tv/")
 }
 
 // HandleHotSearch 获取热搜榜
@@ -36,6 +42,20 @@ func (h *HotSearchHandler) HandleHotSearch(req *http.Request) (*plugin.RouterRes
 	if err != nil {
 		slog.Error("获取酷我热搜失败", "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取热搜失败: "+err.Error()), nil
+	}
+
+	// TV模式返回lxserver原始格式
+	if h.isTVRequest(req) {
+		response := map[string]interface{}{
+			"source": "kw",
+			"list":   list,
+		}
+		body, _ := json.Marshal(response)
+		return &plugin.RouterResponse{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       body,
+		}, nil
 	}
 
 	response := map[string]interface{}{
