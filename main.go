@@ -31,9 +31,9 @@ type Plugin struct {
 	Version  string
 	pluginID int64
 
-	staticHandler  *plugin.StaticHandler
-	sourceManager  *source.Manager
-	sourceHandler  *handlers.SourceHandler
+	staticHandler   *plugin.StaticHandler
+	sourceManager   *source.Manager
+	sourceHandler   *handlers.SourceHandler
 	searchHandler   *handlers.SearchHandler
 	songlistHandler *handlers.SongListHandler
 	runtimeManager  *engine.RuntimeManager
@@ -56,7 +56,7 @@ func (p *Plugin) GetPluginInfo(ctx context.Context, request *emptypb.Empty) (*pb
 			Version:     p.Version,
 			Description: "管理洛雪音源，搜索和导入网络歌曲",
 			Author:      "MiMusic Team",
-			Homepage:    "https://github.com/mimusic-org/mimusic",
+			Homepage:    "https://github.com/mimusic-org/mimusic-plugin-lxmusic",
 		},
 	}, nil
 }
