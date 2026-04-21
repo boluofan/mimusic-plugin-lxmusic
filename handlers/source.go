@@ -39,6 +39,15 @@ func NewSourceHandler(manager *source.Manager, runtimeManager *engine.RuntimeMan
 func (h *SourceHandler) HandleListSources(req *http.Request) (*plugin.RouterResponse, error) {
 	sources := h.manager.ListSources()
 
+	if isTVRequest(req) {
+		body, _ := json.Marshal(sources)
+		return &plugin.RouterResponse{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       body,
+		}, nil
+	}
+
 	// 构建响应（不包含 Script 字段，包含 Enabled 和 Platforms 字段）
 	type SourceItem struct {
 		ID          string   `json:"id"`

@@ -27,7 +27,7 @@ func NewSongListHandler(registry *musicsdk.Registry) *SongListHandler {
 // HandleGetTags 获取指定平台的歌单标签
 // GET /lxmusic/api/songlist/tags?source_id=xx
 func (h *SongListHandler) HandleGetTags(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := req.URL.Query().Get("source_id")
+	sourceID := getSourceID(req)
 	if sourceID == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
 	}
@@ -49,7 +49,7 @@ func (h *SongListHandler) HandleGetTags(req *http.Request) (*plugin.RouterRespon
 // HandleGetList 获取歌单列表
 // GET /lxmusic/api/songlist/list?source_id=xx&sort_id=xx&tag_id=xx&page=1
 func (h *SongListHandler) HandleGetList(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := req.URL.Query().Get("source_id")
+	sourceID := getSourceID(req)
 	if sourceID == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
 	}
@@ -60,7 +60,13 @@ func (h *SongListHandler) HandleGetList(req *http.Request) (*plugin.RouterRespon
 	}
 
 	sortID := req.URL.Query().Get("sort_id")
+	if sortID == "" {
+		sortID = req.URL.Query().Get("sortId")
+	}
 	tagID := req.URL.Query().Get("tag_id")
+	if tagID == "" {
+		tagID = req.URL.Query().Get("tagId")
+	}
 	page, _ := strconv.Atoi(req.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
@@ -78,7 +84,7 @@ func (h *SongListHandler) HandleGetList(req *http.Request) (*plugin.RouterRespon
 // HandleGetDetail 获取歌单详情
 // GET /lxmusic/api/songlist/detail?source_id=xx&id=xxx&page=1
 func (h *SongListHandler) HandleGetDetail(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := req.URL.Query().Get("source_id")
+	sourceID := getSourceID(req)
 	if sourceID == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
 	}
@@ -110,7 +116,7 @@ func (h *SongListHandler) HandleGetDetail(req *http.Request) (*plugin.RouterResp
 // HandleSearch 搜索歌单
 // GET /lxmusic/api/songlist/search?source_id=xx&keyword=xxx&page=1
 func (h *SongListHandler) HandleSearch(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := req.URL.Query().Get("source_id")
+	sourceID := getSourceID(req)
 	if sourceID == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
 	}
@@ -147,7 +153,7 @@ func (h *SongListHandler) HandleSearch(req *http.Request) (*plugin.RouterRespons
 // HandleGetSorts 获取排序选项
 // GET /lxmusic/api/songlist/sorts?source_id=xx
 func (h *SongListHandler) HandleGetSorts(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := req.URL.Query().Get("source_id")
+	sourceID := getSourceID(req)
 	if sourceID == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
 	}

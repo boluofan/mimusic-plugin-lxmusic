@@ -41,7 +41,7 @@ func NewSearchHandler(registry *musicsdk.Registry, runtimeManager *engine.Runtim
 // GET /lxmusic/api/search?keyword=xxx&source_id=xxx&page=1
 func (h *SearchHandler) HandleSearch(req *http.Request) (*plugin.RouterResponse, error) {
 	keyword := req.URL.Query().Get("keyword")
-	sourceID := req.URL.Query().Get("source_id") // 平台 ID: kg/kw/tx/wy/mg
+	sourceID := getSourceID(req)
 	pageStr := req.URL.Query().Get("page")
 
 	if keyword == "" {
@@ -74,6 +74,15 @@ func (h *SearchHandler) HandleSearch(req *http.Request) (*plugin.RouterResponse,
 	}
 
 	// 返回结果
+	if isTVRequest(req) {
+		body, _ := json.Marshal(result.List)
+		return &plugin.RouterResponse{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       body,
+		}, nil
+	}
+
 	response := map[string]interface{}{
 		"code": 0,
 		"msg":  "success",
@@ -91,6 +100,15 @@ func (h *SearchHandler) HandleSearch(req *http.Request) (*plugin.RouterResponse,
 // GET /lxmusic/api/platforms
 func (h *SearchHandler) HandleListPlatforms(req *http.Request) (*plugin.RouterResponse, error) {
 	platforms := h.registry.All()
+
+	if isTVRequest(req) {
+		body, _ := json.Marshal(platforms)
+		return &plugin.RouterResponse{
+			StatusCode: http.StatusOK,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			Body:       body,
+		}, nil
+	}
 
 	response := map[string]interface{}{
 		"code": 0,
