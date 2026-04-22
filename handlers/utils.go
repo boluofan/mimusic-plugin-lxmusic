@@ -15,5 +15,6 @@ func getSourceID(req *http.Request) string {
 	if sourceID := req.URL.Query().Get("source_id"); sourceID != "" {
 		return sourceID
 	}
+	//TV端接口兼容
 	return req.URL.Query().Get("source")
 }

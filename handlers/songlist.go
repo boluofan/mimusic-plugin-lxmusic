@@ -60,10 +60,15 @@ func (h *SongListHandler) HandleGetList(req *http.Request) (*plugin.RouterRespon
 	}
 
 	sortID := req.URL.Query().Get("sort_id")
+	//TV端接口兼容
 	if sortID == "" {
 		sortID = req.URL.Query().Get("sortId")
 	}
+	if isTVRequest(req) && sourceID == "tx" && sortID == "hot" {
+		sortID = "5"
+	}
 	tagID := req.URL.Query().Get("tag_id")
+	//TV端接口兼容
 	if tagID == "" {
 		tagID = req.URL.Query().Get("tagId")
 	}

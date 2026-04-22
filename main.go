@@ -46,7 +46,7 @@ type Plugin struct {
 
 func init() {
 	plugin.RegisterPlugin(&Plugin{
-		Version: "2026.4.21-9",
+		Version: "2026.4.22-5-t",
 	})
 }
 
@@ -163,7 +163,7 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 
 	// 歌单（需要认证）
 	routerManager.RegisterRouter(ctx, "GET", "/api/songlist/tags", p.songlistHandler.HandleGetTags, true)
-	routerManager.RegisterRouter(ctx, "GET", "/api/songlist/list", p.songlistHandler.HandleGetList, true)
+	routerManager.RegisterRouter(ctx, "GET", "/api/songlist/list", p.songlistHandler.HandleGetList, false)
 	routerManager.RegisterRouter(ctx, "GET", "/api/songlist/detail", p.songlistHandler.HandleGetDetail, true)
 	routerManager.RegisterRouter(ctx, "GET", "/api/songlist/search", p.songlistHandler.HandleSearch, true)
 	routerManager.RegisterRouter(ctx, "GET", "/api/songlist/sorts", p.songlistHandler.HandleGetSorts, true)
@@ -176,7 +176,7 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	// 搜索联想
 	routerManager.RegisterRouter(ctx, "GET", "/api/tipSearch", p.tipSearchHandler.HandleTipSearch, false)
 
-	// TV 客户端接口（与上述接口一一对应）
+	// TV 客户端专用接口（与上述接口一一对应）
 	// 音源管理 TV端暂不需要
 	// routerManager.RegisterRouter(ctx, "GET", "/api/tv/sources", p.sourceHandler.HandleListSources, true)
 	// routerManager.RegisterRouter(ctx, "POST", "/api/tv/sources/import", p.sourceHandler.HandleImportSource, true)

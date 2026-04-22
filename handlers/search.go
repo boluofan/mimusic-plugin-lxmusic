@@ -42,6 +42,10 @@ func NewSearchHandler(registry *musicsdk.Registry, runtimeManager *engine.Runtim
 // GET /lxmusic/api/search?keyword=xxx&source_id=xxx&page=1
 func (h *SearchHandler) HandleSearch(req *http.Request) (*plugin.RouterResponse, error) {
 	keyword := req.URL.Query().Get("keyword")
+	//TV端接口兼容
+	if keyword == "" {
+		keyword = req.URL.Query().Get("name")
+	}
 	sourceID := getSourceID(req)
 	pageStr := req.URL.Query().Get("page")
 
