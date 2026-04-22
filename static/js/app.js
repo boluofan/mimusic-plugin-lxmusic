@@ -12,6 +12,7 @@ let currentPlatformId = '';
 let currentKeyword = '';
 let playlists = [];
 let sourcesLoaded = false;
+let hasEnabledSources = true; // 是否有启用的音源，默认 true 避免闪烁
 
 // 跨页持久选择
 const selectedSongs = new Map();
@@ -68,14 +69,20 @@ function showSnackbar(message, type = 'info', duration = 3000) {
 
 // ============ Dialog ============
 
-function showDialog(title, content) {
+function showDialog(title, content, options) {
     return new Promise((resolve) => {
         document.getElementById('dialogTitle').textContent = title;
-        document.getElementById('dialogContent').textContent = content;
+        const contentEl = document.getElementById('dialogContent');
+        contentEl.style.whiteSpace = 'pre-line';
+        contentEl.textContent = content;
         const overlay = document.getElementById('dialogOverlay');
         overlay.style.display = 'flex';
-        document.getElementById('dialogConfirm').onclick = () => { hideDialog(); resolve(true); };
-        document.getElementById('dialogCancel').onclick = () => { hideDialog(); resolve(false); };
+        const confirmBtn = document.getElementById('dialogConfirm');
+        const cancelBtn = document.getElementById('dialogCancel');
+        confirmBtn.textContent = (options && options.confirmText) || '确定';
+        cancelBtn.textContent = (options && options.cancelText) || '取消';
+        confirmBtn.onclick = () => { hideDialog(); resolve(true); };
+        cancelBtn.onclick = () => { hideDialog(); resolve(false); };
     });
 }
 
@@ -183,6 +190,31 @@ function renderPlaylistSelect() {
     select.innerHTML = html;
 }
 
+// ============ 音源状态检查 ============
+
+async function checkSourceStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/sources`, { headers: getAuthHeaders() });
+        const result = await response.json();
+        if (result.code === 0) {
+            const sources = result.data || [];
+            hasEnabledSources = result.has_enabled || sources.some(s => s.enabled);
+        } else {
+            hasEnabledSources = false;
+        }
+    } catch (e) {
+        console.error('检查音源状态失败:', e);
+    }
+    updateWarningBanners();
+}
+
+function updateWarningBanners() {
+    const searchBanner = document.getElementById('searchWarningBanner');
+    const songlistBanner = document.getElementById('songlistWarningBanner');
+    if (searchBanner) searchBanner.classList.toggle('hidden', hasEnabledSources);
+    if (songlistBanner) songlistBanner.classList.toggle('hidden', hasEnabledSources);
+}
+
 // ============ 音源管理 ============
 
 async function loadSources() {
@@ -191,7 +223,7 @@ async function loadSources() {
     try {
         const response = await fetch(`${API_BASE}/sources`, { headers: getAuthHeaders() });
         const result = await response.json();
-        if (result.success) {
+        if (result.code === 0) {
             currentSources = result.data || [];
             renderSources();
         } else {
@@ -206,7 +238,7 @@ async function loadSources() {
 function renderSources() {
     const container = document.getElementById('sourceList');
     if (currentSources.length === 0) {
-        container.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">inbox</span><p>暂无音源，请导入音源脚本以获取播放 URL</p></div>';
+        container.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">inbox</span><p>暂无音源。导入洛雪音源脚本后，即可获取歌曲播放链接。<br>支持导入 .js 脚本文件或 .zip 压缩包。</p></div>';
         return;
     }
     container.innerHTML = currentSources.map(source => `
@@ -249,6 +281,7 @@ async function toggleSource(id, enabled) {
             showSnackbar(enabled ? '音源已启用' : '音源已禁用', 'success');
             const source = currentSources.find(s => s.id === id);
             if (source) source.enabled = enabled;
+            checkSourceStatus();
         } else {
             showSnackbar('操作失败: ' + (result.message || result.error || '未知错误'), 'error');
             loadSources();
@@ -272,6 +305,7 @@ async function importSource(file) {
         if (result.success) {
             showSnackbar('导入成功', 'success');
             loadSources();
+            checkSourceStatus();
         } else {
             showSnackbar('导入失败: ' + (result.message || result.error || '未知错误'), 'error');
         }
@@ -297,6 +331,7 @@ async function importSourceFromURL(url) {
             showSnackbar('导入成功', 'success');
             document.getElementById('sourceUrl').value = '';
             loadSources();
+            checkSourceStatus();
         } else {
             showSnackbar('导入失败: ' + (result.message || result.error || '未知错误'), 'error');
         }
@@ -317,6 +352,7 @@ async function deleteSource(id) {
         if (result.success) {
             showSnackbar('删除成功', 'success');
             loadSources();
+            checkSourceStatus();
         } else {
             showSnackbar('删除失败: ' + (result.message || result.error || '未知错误'), 'error');
         }
@@ -472,6 +508,15 @@ async function importSelectedSongs() {
     const songs = Array.from(selectedSongs.values());
     if (songs.length === 0) { showSnackbar('请选择要导入的歌曲', 'warning'); return; }
 
+    if (!hasEnabledSources) {
+        const proceed = await showDialog(
+            '未配置音源',
+            '当前未配置有效的洛雪音源，导入的歌曲将无法播放。\n\n是否仍要继续导入？',
+            { confirmText: '继续导入', cancelText: '去配置音源' }
+        );
+        if (!proceed) { switchToTab('sources'); return; }
+    }
+
     const quality = document.getElementById('qualitySelect').value;
     const playlistSelect = document.getElementById('playlistSelect');
     let playlistId = 0;
@@ -536,6 +581,9 @@ async function importSelectedSongs() {
                     ? `<div class="import-result-item success">✓ ${escapeHtml(item.name)}</div>`
                     : `<div class="import-result-item error">✗ ${escapeHtml(item.name)}: ${escapeHtml(item.error)}</div>`
             ).join('');
+            if (result.data && result.data.warning) {
+                showSnackbar(result.data.warning, 'warning', 5000);
+            }
             if (data.success > 0) {
                 showSnackbar(`成功导入 ${data.success} 首歌曲`, 'success');
                 selectedSongs.clear();
@@ -544,8 +592,10 @@ async function importSelectedSongs() {
             }
             if (data.failed > 0) showSnackbar(`${data.failed} 首歌曲导入失败`, 'error');
         } else {
-            progressText.textContent = '导入失败: ' + (result.msg || '未知错误');
-            showSnackbar('导入失败: ' + (result.msg || '未知错误'), 'error');
+            const msg = result.msg || '未知错误';
+            const friendlyMsg = msg.includes('音源') ? '未配置有效的音源，无法获取播放链接。请先前往音源管理导入音源。' : msg;
+            progressText.textContent = '导入失败: ' + friendlyMsg;
+            showSnackbar('导入失败: ' + friendlyMsg, 'error');
         }
     } catch (e) {
         progressText.textContent = '导入失败: ' + e.message;
@@ -579,6 +629,7 @@ document.addEventListener('DOMContentLoaded', function () {
     initTabs();
     loadPlatforms();
     loadPlaylists();
+    checkSourceStatus();
 
     // 导入音源文件
     document.getElementById('importBtn').addEventListener('click', () => {
@@ -1210,6 +1261,15 @@ async function slImportSelectedSongs() {
     const songs = Array.from(slSelectedSongs.values());
     if (songs.length === 0) { showSnackbar('请选择要导入的歌曲', 'warning'); return; }
 
+    if (!hasEnabledSources) {
+        const proceed = await showDialog(
+            '未配置音源',
+            '当前未配置有效的洛雪音源，导入的歌曲将无法播放。\n\n是否仍要继续导入？',
+            { confirmText: '继续导入', cancelText: '去配置音源' }
+        );
+        if (!proceed) { switchToTab('sources'); return; }
+    }
+
     const quality = document.getElementById('slQualitySelect').value;
     const playlistSelect = document.getElementById('slPlaylistSelect');
     let playlistId = 0;
@@ -1274,6 +1334,9 @@ async function slImportSelectedSongs() {
                     ? `<div class="import-result-item success">✓ ${escapeHtml(item.name)}</div>`
                     : `<div class="import-result-item error">✗ ${escapeHtml(item.name)}: ${escapeHtml(item.error)}</div>`
             ).join('');
+            if (result.data && result.data.warning) {
+                showSnackbar(result.data.warning, 'warning', 5000);
+            }
             if (data.success > 0) {
                 showSnackbar(`成功导入 ${data.success} 首歌曲`, 'success');
                 slSelectedSongs.clear();
@@ -1282,8 +1345,10 @@ async function slImportSelectedSongs() {
             }
             if (data.failed > 0) showSnackbar(`${data.failed} 首歌曲导入失败`, 'error');
         } else {
-            progressText.textContent = '导入失败: ' + (result.msg || '未知错误');
-            showSnackbar('导入失败: ' + (result.msg || '未知错误'), 'error');
+            const msg = result.msg || '未知错误';
+            const friendlyMsg = msg.includes('音源') ? '未配置有效的音源，无法获取播放链接。请先前往音源管理导入音源。' : msg;
+            progressText.textContent = '导入失败: ' + friendlyMsg;
+            showSnackbar('导入失败: ' + friendlyMsg, 'error');
         }
     } catch (e) {
         progressText.textContent = '导入失败: ' + e.message;

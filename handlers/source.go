@@ -90,7 +90,18 @@ func (h *SourceHandler) HandleListSources(req *http.Request) (*plugin.RouterResp
 		})
 	}
 
-	return plugin.SuccessResponse(items), nil
+	response := map[string]interface{}{
+		"code":        0,
+		"msg":         "success",
+		"data":        items,
+		"has_enabled": h.runtimeManager.Count() > 0,
+	}
+	body, _ := json.Marshal(response)
+	return &plugin.RouterResponse{
+		StatusCode: http.StatusOK,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Body:       body,
+	}, nil
 }
 
 // HandleImportSource 导入音源

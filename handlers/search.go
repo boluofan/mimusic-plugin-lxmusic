@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -375,17 +376,24 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 	}
 
 	// 返回结果统计
+	responseData := map[string]interface{}{
+		"total":         len(request.Songs),
+		"success":       successCount,
+		"failed":        failedCount,
+		"results":       results,
+		"playlist_id":   playlistID,
+		"playlist_name": playlistName,
+	}
+
+	// 检查是否有可用音源，无可用音源时附带警告
+	if h.runtimeManager.Count() == 0 {
+		responseData["warning"] = "注意：当前未配置有效的洛雪音源，导入的歌曲暂时无法播放。请在「音源管理」中导入音源脚本。"
+	}
+
 	response := map[string]interface{}{
 		"code": 0,
 		"msg":  "success",
-		"data": map[string]interface{}{
-			"total":         len(request.Songs),
-			"success":       successCount,
-			"failed":        failedCount,
-			"results":       results,
-			"playlist_id":   playlistID,
-			"playlist_name": playlistName,
-		},
+		"data": responseData,
 	}
 	body, _ := json.Marshal(response)
 	return &plugin.RouterResponse{
@@ -661,6 +669,12 @@ func (h *SearchHandler) HandleGetMusicUrl(req *http.Request) (*plugin.RouterResp
 	musicUrl, err := h.runtimeManager.GetMusicUrl(mapping.Platform, mapping.Quality, mapping.SongInfo)
 	if err != nil {
 		slog.Error("获取播放 URL 失败", "hash", hash, "error", err)
+		if errors.Is(err, engine.ErrNoSourceLoaded) {
+			return plugin.ErrorResponse(http.StatusServiceUnavailable, "尚未配置有效的洛雪音源，无法获取播放链接。请在「音源管理」中导入并启用音源脚本。"), nil
+		}
+		if errors.Is(err, engine.ErrPlatformNotSupported) {
+			return plugin.ErrorResponse(http.StatusServiceUnavailable, "当前没有支持该平台的音源，请导入支持该平台的音源脚本。"), nil
+		}
 		return plugin.ErrorResponse(http.StatusBadGateway, "获取播放 URL 失败: "+err.Error()), nil
 	}
 	if musicUrl == "" {

@@ -98,6 +98,33 @@ jobs:
           echo "file_url=${FILE_URL}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
+      - name: Push version JSON to plugins repo
+        env:
+          GH_TOKEN: ${{ secrets.MIMUSIC_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DOWNLOAD_URL="${{ steps.create_release.outputs.file_url }}"
+          REPO="mimusic-org/plugins"
+          ENCODED_CONTENT=$(jq -cn --arg v "$VERSION" --arg u "$DOWNLOAD_URL" \
+            '{version: $v, download_url: $u}' | base64 -w 0)
+
+          # 获取现有文件的 SHA（如果存在）
+          EXISTING_SHA=$(gh api "repos/${REPO}/contents/lxmusic.json" --jq '.sha' 2>/dev/null || echo "")
+
+          # 构建并推送请求体
+          if [ -n "$EXISTING_SHA" ]; then
+            jq -cn --arg msg "chore: update lxmusic.json to v${VERSION}" \
+              --arg content "$ENCODED_CONTENT" --arg sha "$EXISTING_SHA" \
+              '{message: $msg, content: $content, sha: $sha}' | \
+              gh api "repos/${REPO}/contents/lxmusic.json" --method PUT --input -
+          else
+            jq -cn --arg msg "chore: add lxmusic.json v${VERSION}" \
+              --arg content "$ENCODED_CONTENT" \
+              '{message: $msg, content: $content}' | \
+              gh api "repos/${REPO}/contents/lxmusic.json" --method PUT --input -
+          fi
+          echo "Pushed lxmusic.json to ${REPO}"
+
       - name: Post comment to mimusic issue
         env:
           GH_TOKEN: ${{ secrets.MIMUSIC_TOKEN }}

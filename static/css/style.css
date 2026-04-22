@@ -791,6 +791,43 @@ body {
     -webkit-line-clamp: unset;
 }
 
+/* Warning Banner */
+.source-warning-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0 0 -4px;
+    padding: 12px 16px;
+    background: var(--md-warning-container);
+    color: #4E2700;
+    border-left: 4px solid var(--md-warning);
+    border-radius: var(--md-radius-md);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.source-warning-banner.hidden {
+    display: none;
+}
+
+.source-warning-banner .warning-text {
+    flex: 1;
+}
+
+.source-warning-banner .warning-link {
+    color: var(--md-primary);
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    text-decoration: none;
+    flex-shrink: 0;
+    align-self: center;
+}
+
+.source-warning-banner .warning-link:hover {
+    text-decoration: underline;
+}
+
 /* Responsive */
 @media (max-width: 600px) {
     .search-row { flex-direction: column; align-items: stretch; }

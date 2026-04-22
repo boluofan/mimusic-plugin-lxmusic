@@ -6,12 +6,20 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"sync/atomic"
 
 	"github.com/mimusic-org/plugin/api/pbplugin"
+)
+
+var (
+	// ErrNoSourceLoaded 完全没有加载任何音源
+	ErrNoSourceLoaded = errors.New("no source loaded")
+	// ErrPlatformNotSupported 有音源但不支持该平台
+	ErrPlatformNotSupported = errors.New("platform not supported")
 )
 
 // RuntimeManager 管理所有已加载的音源运行时
@@ -76,10 +84,14 @@ func (rm *RuntimeManager) GetRuntime(sourceID string) (*SourceRuntime, bool) {
 // 5. 解析首个成功结果，更新成功率统计
 func (rm *RuntimeManager) GetMusicUrl(platform, quality string, musicInfo map[string]interface{}) (string, error) {
 	// 1. 从平台索引中获取支持该 platform 的 runtime
+	if rm.Count() == 0 {
+		return "", fmt.Errorf("%w: no source loaded", ErrNoSourceLoaded)
+	}
+
 	candidates := rm.platformIndex[platform]
 
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("no source supports platform: %s", platform)
+		return "", fmt.Errorf("%w: %s", ErrPlatformNotSupported, platform)
 	}
 
 	// 2. 按成功率降序排序

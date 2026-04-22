@@ -18,6 +18,12 @@
     <div class="tab-content active" id="tab-search">
         <div class="container">
 
+            <!-- 无音源警告横幅 -->
+            <div id="searchWarningBanner" class="source-warning-banner hidden">
+                <span class="warning-text">⚠️ 尚未配置有效的洛雪音源。搜索和浏览歌单可正常使用，但导入的歌曲无法播放。</span>
+                <a class="warning-link" onclick="switchToTab('sources')">前往音源管理 →</a>
+            </div>
+
             <!-- 搜索卡片 -->
             <div class="card">
                 <div class="card-header">歌曲搜索</div>
@@ -109,6 +115,12 @@
     <!-- Tab 3: 歌单 -->
     <div class="tab-content" id="tab-songlist">
         <div class="container">
+
+            <!-- 无音源警告横幅 -->
+            <div id="songlistWarningBanner" class="source-warning-banner hidden">
+                <span class="warning-text">⚠️ 尚未配置有效的洛雪音源。搜索和浏览歌单可正常使用，但导入的歌曲无法播放。</span>
+                <a class="warning-link" onclick="switchToTab('sources')">前往音源管理 →</a>
+            </div>
 
             <!-- 歌单操作卡片 -->
             <div class="card">
