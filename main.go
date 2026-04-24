@@ -185,24 +185,24 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	// routerManager.RegisterRouter(ctx, "PUT", "/api/tv/sources/toggle", p.sourceHandler.HandleToggleSource, true)
 	// routerManager.RegisterRouter(ctx, "POST", "/api/tv/songs/import", p.searchHandler.HandleImportSongs, true)
 	// 搜索
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/search", p.searchHandler.HandleSearch, false)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/platforms", p.searchHandler.HandleListPlatforms, false)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/search", p.searchHandler.HandleSearch)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/platforms", p.searchHandler.HandleListPlatforms)
 	// 播放URL和歌词
-	routerManager.RegisterRouter(ctx, "POST", "/api/tv/music/url", p.searchHandler.HandleTVMusicUrl, false)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/lyric", p.searchHandler.HandleTVLyric, false)
+	routerManager.RegisterRouter(ctx, "POST", "/api/tv/url", p.searchHandler.HandleTVMusicUrl)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/lyric", p.searchHandler.HandleTVLyric)
 	// 歌单
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/tags", p.songlistHandler.HandleGetTags, false)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/list", p.songlistHandler.HandleGetList, false)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/detail", p.songlistHandler.HandleGetDetail, false)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/search", p.songlistHandler.HandleSearch, false)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/sorts", p.songlistHandler.HandleGetSorts, false)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/tags", p.songlistHandler.HandleGetTags)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/list", p.songlistHandler.HandleGetList)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/detail", p.songlistHandler.HandleGetDetail)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/search", p.songlistHandler.HandleSearch)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/sorts", p.songlistHandler.HandleGetSorts)
 	// 排行榜
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/leaderboard/boards", p.leaderboardHandler.HandleGetBoards, false)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/leaderboard/list", p.leaderboardHandler.HandleGetList, false)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/leaderboard/boards", p.leaderboardHandler.HandleGetBoards)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/leaderboard/list", p.leaderboardHandler.HandleGetList)
 	// 热搜
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/hotSearch", p.hotSearchHandler.HandleHotSearch, false)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/hotSearch", p.hotSearchHandler.HandleHotSearch)
 	// 搜索联想
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/tipSearch", p.tipSearchHandler.HandleTipSearch, false)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/tipSearch", p.tipSearchHandler.HandleTipSearch)
 
 	slog.Info("洛雪音源插件路由注册完成")
 	return &emptypb.Empty{}, nil
