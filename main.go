@@ -46,7 +46,7 @@ type Plugin struct {
 
 func init() {
 	plugin.RegisterPlugin(&Plugin{
-		Version: "2026.4.22-5-t",
+		Version: "2026.4.27-1-t",
 	})
 }
 
@@ -108,6 +108,14 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	p.registry.RegisterSongListProvider(musicsdk.NewMgSongListProvider())
 	slog.Info("已注册内置平台歌单提供者", "count", 5)
 
+	// 注册热搜获取器
+	p.registry.RegisterHotSearchFetcher(musicsdk.NewHotSearchHandler())
+	// 注册排行榜提供者
+	p.registry.RegisterLeaderboardProvider(musicsdk.NewLeaderboardHandler())
+	// 注册搜索联想提供者
+	p.registry.RegisterTipSearchProvider(musicsdk.NewTipSearchHandler())
+	slog.Info("已注册内置平台热搜、排行榜、联想词提供者", "count", 5)
+
 	// 5. 初始化 urlmap.Store
 	p.urlmapStore, err = urlmap.NewStore(dataDir)
 	if err != nil {
@@ -132,9 +140,9 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	p.sourceHandler = handlers.NewSourceHandler(p.sourceManager, p.runtimeManager, p.pluginID)
 	p.searchHandler = handlers.NewSearchHandler(p.registry, p.runtimeManager, p.urlmapStore)
 	p.songlistHandler = handlers.NewSongListHandler(p.registry)
-	p.leaderboardHandler = handlers.NewLeaderboardHandler()
-	p.hotSearchHandler = handlers.NewHotSearchHandler()
-	p.tipSearchHandler = handlers.NewTipSearchHandler()
+	p.leaderboardHandler = handlers.NewLeaderboardHandler(p.registry)
+	p.hotSearchHandler = handlers.NewHotSearchHandler(p.registry)
+	p.tipSearchHandler = handlers.NewTipSearchHandler(p.registry)
 
 	// 8. 获取路由管理器
 	routerManager := plugin.GetRouterManager()
@@ -177,13 +185,6 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	routerManager.RegisterRouter(ctx, "GET", "/api/tipSearch", p.tipSearchHandler.HandleTipSearch, false)
 
 	// TV 客户端专用接口（与上述接口一一对应）
-	// 音源管理 TV端暂不需要
-	// routerManager.RegisterRouter(ctx, "GET", "/api/tv/sources", p.sourceHandler.HandleListSources, true)
-	// routerManager.RegisterRouter(ctx, "POST", "/api/tv/sources/import", p.sourceHandler.HandleImportSource, true)
-	// routerManager.RegisterRouter(ctx, "POST", "/api/tv/sources/import-url", p.sourceHandler.HandleImportSourceFromURL, true)
-	// routerManager.RegisterRouter(ctx, "DELETE", "/api/tv/sources", p.sourceHandler.HandleDeleteSource, true)
-	// routerManager.RegisterRouter(ctx, "PUT", "/api/tv/sources/toggle", p.sourceHandler.HandleToggleSource, true)
-	// routerManager.RegisterRouter(ctx, "POST", "/api/tv/songs/import", p.searchHandler.HandleImportSongs, true)
 	// 搜索
 	routerManager.RegisterRouter(ctx, "GET", "/api/tv/search", p.searchHandler.HandleSearch)
 	routerManager.RegisterRouter(ctx, "GET", "/api/tv/platforms", p.searchHandler.HandleListPlatforms)
@@ -200,7 +201,7 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	routerManager.RegisterRouter(ctx, "GET", "/api/tv/leaderboard/boards", p.leaderboardHandler.HandleGetBoards)
 	routerManager.RegisterRouter(ctx, "GET", "/api/tv/leaderboard/list", p.leaderboardHandler.HandleGetList)
 	// 热搜
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/hotSearch", p.hotSearchHandler.HandleHotSearch)
+	routerManager.RegisterRouter(ctx, "GET", "/api/tv/hotSearch", p.hotSearchHandler.HandleHotSearch, false)
 	// 搜索联想
 	routerManager.RegisterRouter(ctx, "GET", "/api/tv/tipSearch", p.tipSearchHandler.HandleTipSearch)
 

@@ -22,15 +22,18 @@ import (
 
 	pluginhttp "github.com/mimusic-org/plugin/pkg/go-plugin-http/http"
 
+	"github.com/mimusic-org/musicsdk"
 	"github.com/mimusic-org/plugin/api/plugin"
 )
 
 // LeaderboardHandler 排行榜处理器
-type LeaderboardHandler struct{}
+type LeaderboardHandler struct {
+	registry *musicsdk.Registry
+}
 
 // NewLeaderboardHandler 创建排行榜处理器
-func NewLeaderboardHandler() *LeaderboardHandler {
-	return &LeaderboardHandler{}
+func NewLeaderboardHandler(registry *musicsdk.Registry) *LeaderboardHandler {
+	return &LeaderboardHandler{registry: registry}
 }
 
 // BoardItem 排行榜分类项
@@ -68,24 +71,14 @@ func (h *LeaderboardHandler) HandleGetBoards(req *http.Request) (*plugin.RouterR
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
 
-	var boards []BoardItem
+	var boards []musicsdk.BoardItem
 	var err error
 
-	switch source {
-	case "kw":
-		boards, err = h.getKuwoBoards()
-	case "kg":
-		boards, err = h.getKgBoards()
-	case "tx":
-		boards, err = h.getTxBoards()
-	case "wy":
-		boards, err = h.getWyBoards()
-	case "mg":
-		boards, err = h.getMgBoards()
-	default:
-		return plugin.ErrorResponse(http.StatusBadRequest, "暂不支持该平台: "+source), nil
+	provider, ok := h.registry.GetLeaderboardProvider("leaderboard")
+	if !ok {
+		return plugin.ErrorResponse(http.StatusInternalServerError, "leaderboard provider not found"), nil
 	}
-
+	boards, err = provider.GetBoards(source)
 	if err != nil {
 		slog.Error("获取排行榜分类失败", "source", source, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取排行榜分类失败: "+err.Error()), nil
@@ -228,30 +221,15 @@ func (h *LeaderboardHandler) HandleGetList(req *http.Request) (*plugin.RouterRes
 		page = 1
 	}
 
-	var list []SongItem
+	var list []musicsdk.SearchItem
 	var total int
 	var err error
 
-	switch source {
-	case "kw":
-		bangID := strings.TrimPrefix(boardID, "kw__")
-		list, total, err = h.getKuwoBoardList(bangID, page)
-	case "kg":
-		bangID := strings.TrimPrefix(boardID, "kg__")
-		list, total, err = h.getKgBoardList(bangID, page)
-	case "tx":
-		bangID := strings.TrimPrefix(boardID, "tx__")
-		list, total, err = h.getTxBoardList(bangID, page)
-	case "wy":
-		bangID := strings.TrimPrefix(boardID, "wy__")
-		list, total, err = h.getWyBoardList(bangID, page)
-	case "mg":
-		bangID := strings.TrimPrefix(boardID, "mg__")
-		list, total, err = h.getMgBoardList(bangID, page)
-	default:
-		return plugin.ErrorResponse(http.StatusBadRequest, "暂不支持该平台: "+source), nil
+	provider, ok := h.registry.GetLeaderboardProvider("leaderboard")
+	if !ok {
+		return plugin.ErrorResponse(http.StatusInternalServerError, "leaderboard provider not found"), nil
 	}
-
+	list, total, err = provider.GetList(source, boardID, page)
 	if err != nil {
 		slog.Error("获取排行榜歌曲失败", "source", source, "boardId", boardID, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取排行榜歌曲失败: "+err.Error()), nil
