@@ -111,6 +111,14 @@ body {
 
 .tab-item.active::after { transform: translateX(-50%) scaleX(1); }
 
+/* Source list scrollable area */
+.source-list {
+    display: flex;
+    flex-direction: column;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
 .tab-item:hover:not(.active) { background: rgba(99,102,241,.06); }
 
 /* Tab Content */
@@ -526,7 +534,7 @@ body {
 .result-meta { font-size: 12px; color: var(--md-on-surface-variant); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-duration { font-size: 12px; color: var(--md-on-surface-variant); flex-shrink: 0; }
 
-/* Source List */
+/* Source List (moved to sub-tab section above) */
 .source-list { display: flex; flex-direction: column; }
 
 .source-import-row {

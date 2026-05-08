@@ -21,7 +21,7 @@
             <!-- 无音源警告横幅 -->
             <div id="searchWarningBanner" class="source-warning-banner hidden">
                 <span class="warning-text">⚠️ 尚未配置有效的洛雪音源。搜索和浏览歌单可正常使用，但导入的歌曲无法播放。</span>
-                <a class="warning-link" onclick="switchToTab('sources')">前往音源管理 →</a>
+                <a class="warning-link" onclick="switchToTab('sources')">前往 设置-音源管理 →</a>
             </div>
 
             <!-- 搜索卡片 -->
@@ -119,7 +119,7 @@
             <!-- 无音源警告横幅 -->
             <div id="songlistWarningBanner" class="source-warning-banner hidden">
                 <span class="warning-text">⚠️ 尚未配置有效的洛雪音源。搜索和浏览歌单可正常使用，但导入的歌曲无法播放。</span>
-                <a class="warning-link" onclick="switchToTab('sources')">前往音源管理 →</a>
+                <a class="warning-link" onclick="switchToTab('sources')">前往 设置-音源管理 →</a>
             </div>
 
             <!-- 歌单操作卡片 -->
@@ -223,6 +223,92 @@
         </div>
     </div>
 
+    <!-- Tab 4: 排行榜 -->
+    <div class="tab-content" id="tab-leaderboard">
+        <div class="container">
+
+            <!-- 无音源警告横幅 -->
+            <div id="lbWarningBanner" class="source-warning-banner hidden">
+                <span class="warning-text">⚠️ 尚未配置有效的洛雪音源。搜索和浏览排行榜可正常使用，但导入的歌曲无法播放。</span>
+                <a class="warning-link" onclick="switchToTab('sources')">前往 设置-音源管理 →</a>
+            </div>
+
+            <!-- 排行榜操作卡片 -->
+            <div class="card">
+                <div class="card-header">排行榜</div>
+                <div class="search-row">
+                    <select id="lbPlatformSelect" class="select-field" style="width:150px;flex-shrink:0">
+                        <option value="kg" selected>kg</option>
+                        <option value="kw">kw</option>
+                        <option value="tx">tx</option>
+                        <option value="wy">wy</option>
+                        <option value="mg">mg</option>
+                    </select>
+                    <span id="lbLoadStatus" class="text-muted" style="font-size:12px"></span>
+                </div>
+            </div>
+
+            <!-- 排行榜分类卡片 -->
+            <div class="card" id="lbBoardsCard" style="display:none">
+                <div class="card-header">
+                    排行榜分类
+                    <button class="btn-icon" id="lbBoardsToggleBtn" onclick="lbToggleBoardsCard()" title="折叠/展开">
+                        <span class="material-symbols-outlined">expand_less</span>
+                    </button>
+                </div>
+                <div id="lbBoardsCardBody">
+                    <div id="lbBoardChips" class="tag-chips"></div>
+                </div>
+            </div>
+
+            <!-- 歌曲列表卡片 -->
+            <div class="card" id="lbListCard" style="display:none">
+                <div class="card-header">
+                    <button class="btn-icon" onclick="lbBackToBoards()" title="返回">
+                        <span class="material-symbols-outlined">arrow_back</span>
+                    </button>
+                    <span id="lbBoardTitle">歌曲列表</span>
+                </div>
+                <!-- 操作工具栏 -->
+                <div class="toolbar">
+                    <select id="lbQualitySelect" class="select-field select-small">
+                        <option value="128k">128k</option>
+                        <option value="320k" selected>320k</option>
+                        <option value="flac">FLAC</option>
+                    </select>
+                    <select id="lbPlaylistSelect" class="select-field select-small">
+                        <option value="">不添加到歌单</option>
+                        <option value="__new__">+ 新建歌单...</option>
+                    </select>
+                    <div id="lbNewPlaylistWrapper" style="display:none;flex:1;min-width:160px">
+                        <input type="text" id="lbNewPlaylistName" class="text-field" placeholder="歌单名称">
+                    </div>
+                    <label class="md-checkbox">
+                        <input type="checkbox" id="lbSelectAll">
+                        <span>全选当前页</span>
+                    </label>
+                    <button id="lbImportBtn" class="btn-filled" disabled>
+                        导入选中
+                        <span id="lbSelectedBadge" class="badge">0</span>
+                    </button>
+                </div>
+                <div id="lbSongList" class="result-list"></div>
+                <div class="pagination" id="lbPagination"></div>
+            </div>
+
+            <!-- 导入进度卡片 -->
+            <div class="card" id="lbImportProgress" style="display:none">
+                <div class="card-header">导入进度</div>
+                <div class="progress-linear">
+                    <div class="progress-linear-fill" id="lbProgressFill"></div>
+                </div>
+                <div class="progress-text" id="lbProgressText">准备中...</div>
+                <div id="lbImportResults" class="import-results"></div>
+            </div>
+
+        </div>
+    </div>
+
     <!-- Snackbar -->
     <div id="snackbar" class="snackbar"></div>
 
@@ -236,9 +322,13 @@
             <span class="material-symbols-outlined">queue_music</span>
             歌单
         </button>
+        <button class="tab-item" data-tab="leaderboard">
+            <span class="material-symbols-outlined">leaderboard</span>
+            排行榜
+        </button>
         <button class="tab-item" data-tab="sources">
-            <span class="material-symbols-outlined">library_music</span>
-            音源管理
+            <span class="material-symbols-outlined">settings</span>
+            设置
         </button>
     </nav>
 

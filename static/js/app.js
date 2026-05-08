@@ -108,6 +108,9 @@ function initTabs() {
                 loadSources();
                 sourcesLoaded = true;
             }
+            if (tab === 'leaderboard' && !lbLeaderboardLoaded) {
+                lbLoadBoards();
+            }
         });
     });
 }
@@ -211,8 +214,10 @@ async function checkSourceStatus() {
 function updateWarningBanners() {
     const searchBanner = document.getElementById('searchWarningBanner');
     const songlistBanner = document.getElementById('songlistWarningBanner');
+    const lbBanner = document.getElementById('lbWarningBanner');
     if (searchBanner) searchBanner.classList.toggle('hidden', hasEnabledSources);
     if (songlistBanner) songlistBanner.classList.toggle('hidden', hasEnabledSources);
+    if (lbBanner) lbBanner.classList.toggle('hidden', hasEnabledSources);
 }
 
 // ============ 音源管理 ============
@@ -680,6 +685,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // 初始化歌单 Tab
     initSonglistTab();
+
+    // 初始化排行榜 Tab
+    initLeaderboardTab();
 });
 
 // ============ 歌单 Tab ============
@@ -1356,5 +1364,317 @@ async function slImportSelectedSongs() {
     } finally {
         importBtn.disabled = slSelectedSongs.size === 0;
         importBtn.innerHTML = `导入选中 <span id="slSelectedBadge" class="badge">${slSelectedSongs.size}</span>`;
+    }
+}
+
+// ============ 排行榜 Tab ============
+
+// 排行榜状态
+let lbCurrentPlatform = 'kg';
+let lbBoards = [];
+let lbCurrentBoard = null;
+let lbSongs = [];
+let lbCurrentPage = 1;
+let lbTotal = 0;
+let lbSelectedSongs = new Map();
+let lbBoardsCardCollapsed = false;
+let lbLeaderboardLoaded = false;
+
+function initLeaderboardTab() {
+    document.getElementById('lbPlatformSelect').addEventListener('change', function () {
+        lbCurrentPlatform = this.value;
+        document.getElementById('lbBoardsCard').style.display = 'none';
+        document.getElementById('lbListCard').style.display = 'none';
+        lbBoards = [];
+        lbCurrentBoard = null;
+        lbLoadBoards();
+    });
+
+    document.getElementById('lbSelectAll').addEventListener('change', lbToggleSelectAll);
+    document.getElementById('lbImportBtn').addEventListener('click', lbImportSelectedSongs);
+
+    document.getElementById('lbPlaylistSelect').addEventListener('change', function () {
+        const wrapper = document.getElementById('lbNewPlaylistWrapper');
+        wrapper.style.display = this.value === '__new__' ? 'flex' : 'none';
+    });
+}
+
+async function lbLoadBoards() {
+    const statusEl = document.getElementById('lbLoadStatus');
+    statusEl.textContent = '加载中...';
+
+    try {
+        const resp = await fetch(`${API_BASE}/leaderboard/boards?source_id=${lbCurrentPlatform}`, { headers: getAuthHeaders() });
+        const result = await resp.json();
+        if (result.code === 0) {
+            lbBoards = result.data || [];
+            lbRenderBoards();
+            document.getElementById('lbBoardsCard').style.display = '';
+            statusEl.textContent = lbBoards.length > 0 ? `共 ${lbBoards.length} 个排行榜` : '暂无可用排行榜';
+            lbLeaderboardLoaded = true;
+        } else {
+            showSnackbar('加载排行榜失败: ' + (result.msg || '未知错误'), 'error');
+        }
+    } catch (e) {
+        showSnackbar('加载排行榜失败: ' + e.message, 'error');
+        statusEl.textContent = '加载失败';
+    }
+}
+
+function lbRenderBoards() {
+    const container = document.getElementById('lbBoardChips');
+    if (lbBoards.length === 0) {
+        container.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">leaderboard</span><p>暂无可用排行榜</p></div>';
+        return;
+    }
+    container.innerHTML = lbBoards.map(b =>
+        `<button class="tag-chip" data-board-id="${escapeHtml(b.id)}">${escapeHtml(b.name)}</button>`
+    ).join('');
+    container.querySelectorAll('.tag-chip').forEach(chip => {
+        chip.addEventListener('click', function () {
+            lbCurrentBoard = lbBoards.find(b => b.id === this.dataset.boardId);
+            lbLoadList(1);
+        });
+    });
+}
+
+async function lbLoadList(page) {
+    if (!lbCurrentBoard) return;
+    lbCurrentPage = page;
+    const listCard = document.getElementById('lbListCard');
+    const songList = document.getElementById('lbSongList');
+    listCard.style.display = '';
+    document.getElementById('lbBoardsCard').style.display = 'none';
+    document.getElementById('lbBoardTitle').textContent = lbCurrentBoard.name;
+    songList.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">hourglass_empty</span><p>加载中...</p></div>';
+
+    try {
+        const params = new URLSearchParams({
+            source_id: lbCurrentPlatform,
+            board_id: lbCurrentBoard.id,
+            page: page
+        });
+        const resp = await fetch(`${API_BASE}/leaderboard/list?${params}`, { headers: getAuthHeaders() });
+        const result = await resp.json();
+        if (result.code === 0) {
+            lbSongs = result.data.list || [];
+            lbTotal = result.data.total || 0;
+            lbRenderList();
+        } else {
+            songList.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败</p></div>';
+        }
+    } catch (e) {
+        songList.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败: ' + escapeHtml(e.message) + '</p></div>';
+    }
+}
+
+function lbRenderList() {
+    const container = document.getElementById('lbSongList');
+    if (lbSongs.length === 0) {
+        container.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">music_off</span><p>暂无歌曲</p></div>';
+        document.getElementById('lbPagination').innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = lbSongs.map((song, i) => {
+        const key = getSongKey(song);
+        const checked = lbSelectedSongs.has(key) ? 'checked' : '';
+        const selectedClass = lbSelectedSongs.has(key) ? ' selected' : '';
+        const imgHtml = song.img
+            ? `<img src="${escapeHtml(song.img)}" alt="" loading="lazy" onerror="this.parentNode.innerHTML='<span class=\\'material-symbols-outlined\\'>music_note</span>'">`
+            : '<span class="material-symbols-outlined">music_note</span>';
+        return `
+            <div class="result-item${selectedClass}" data-index="${i}">
+                <input type="checkbox" class="lb-checkbox" data-index="${i}" ${checked}
+                    onchange="lbOnSongCheckChanged(${i}, this.checked)" style="accent-color:var(--md-primary);width:18px;height:18px;cursor:pointer;flex-shrink:0">
+                <div class="result-thumb">${imgHtml}</div>
+                <div class="result-info">
+                    <div class="result-name">${escapeHtml(song.name)}</div>
+                    <div class="result-meta">${escapeHtml(song.singer || '')}${song.album ? ' — ' + escapeHtml(song.album) : ''}</div>
+                </div>
+                <div class="result-duration">${formatDuration(song.duration)}</div>
+            </div>
+        `;
+    }).join('');
+
+    const allChecked = lbSongs.every(s => lbSelectedSongs.has(getSongKey(s)));
+    document.getElementById('lbSelectAll').checked = allChecked && lbSongs.length > 0;
+
+    lbRenderPagination();
+    lbUpdateSelectedCount();
+}
+
+function lbOnSongCheckChanged(index, checked) {
+    const song = lbSongs[index];
+    const key = getSongKey(song);
+    if (checked) lbSelectedSongs.set(key, song);
+    else lbSelectedSongs.delete(key);
+    const row = document.querySelectorAll('#lbSongList .result-item')[index];
+    if (row) row.classList.toggle('selected', checked);
+    lbUpdateSelectedCount();
+    const allChecked = lbSongs.every(s => lbSelectedSongs.has(getSongKey(s)));
+    document.getElementById('lbSelectAll').checked = allChecked;
+}
+
+function lbToggleSelectAll() {
+    const checked = document.getElementById('lbSelectAll').checked;
+    lbSongs.forEach(song => {
+        const key = getSongKey(song);
+        if (checked) lbSelectedSongs.set(key, song);
+        else lbSelectedSongs.delete(key);
+    });
+    lbRenderList();
+    lbUpdateSelectedCount();
+}
+
+function lbUpdateSelectedCount() {
+    const count = lbSelectedSongs.size;
+    const badge = document.getElementById('lbSelectedBadge');
+    if (badge) badge.textContent = count;
+    document.getElementById('lbImportBtn').disabled = count === 0;
+}
+
+function lbRenderPagination() {
+    const container = document.getElementById('lbPagination');
+    const limit = 50;
+    const totalPages = Math.max(1, Math.ceil(lbTotal / limit));
+    if (totalPages <= 1) { container.innerHTML = ''; return; }
+
+    const prevDisabled = lbCurrentPage <= 1 ? 'disabled' : '';
+    const nextDisabled = lbCurrentPage >= totalPages ? 'disabled' : '';
+
+    container.innerHTML = `
+        <button class="btn-icon" title="上一页" ${prevDisabled} onclick="lbPageNav(${lbCurrentPage - 1})">
+            <span class="material-symbols-outlined">chevron_left</span>
+        </button>
+        <span class="page-info">第 ${lbCurrentPage} / ${totalPages} 页</span>
+        <button class="btn-icon" title="下一页" ${nextDisabled} onclick="lbPageNav(${lbCurrentPage + 1})">
+            <span class="material-symbols-outlined">chevron_right</span>
+        </button>
+    `;
+}
+
+function lbPageNav(page) {
+    lbLoadList(page);
+}
+
+function lbBackToBoards() {
+    document.getElementById('lbListCard').style.display = 'none';
+    document.getElementById('lbBoardsCard').style.display = '';
+    lbCurrentBoard = null;
+}
+
+function lbToggleBoardsCard() {
+    lbBoardsCardCollapsed = !lbBoardsCardCollapsed;
+    const body = document.getElementById('lbBoardsCardBody');
+    const icon = document.querySelector('#lbBoardsToggleBtn .material-symbols-outlined');
+    if (lbBoardsCardCollapsed) {
+        body.style.display = 'none';
+        icon.textContent = 'expand_more';
+    } else {
+        body.style.display = '';
+        icon.textContent = 'expand_less';
+    }
+}
+
+async function lbImportSelectedSongs() {
+    const songs = Array.from(lbSelectedSongs.values());
+    if (songs.length === 0) { showSnackbar('请选择要导入的歌曲', 'warning'); return; }
+
+    if (!hasEnabledSources) {
+        const proceed = await showDialog(
+            '未配置音源',
+            '当前未配置有效的洛雪音源，导入的歌曲将无法播放。\n\n是否仍要继续导入？',
+            { confirmText: '继续导入', cancelText: '去配置音源' }
+        );
+        if (!proceed) { switchToTab('sources'); return; }
+    }
+
+    const quality = document.getElementById('lbQualitySelect').value;
+    const playlistSelect = document.getElementById('lbPlaylistSelect');
+    let playlistId = 0;
+    let newPlaylistName = '';
+
+    if (playlistSelect.value === '__new__') {
+        newPlaylistName = document.getElementById('lbNewPlaylistName').value.trim();
+        if (!newPlaylistName) { showSnackbar('请输入歌单名称', 'error'); return; }
+    } else if (playlistSelect.value) {
+        playlistId = parseInt(playlistSelect.value);
+    }
+
+    const progressSection = document.getElementById('lbImportProgress');
+    const progressFill = document.getElementById('lbProgressFill');
+    const progressText = document.getElementById('lbProgressText');
+    const importResultsEl = document.getElementById('lbImportResults');
+
+    progressSection.style.display = '';
+    progressFill.style.width = '0%';
+    progressText.textContent = '正在导入...';
+    importResultsEl.innerHTML = '';
+
+    const importBtn = document.getElementById('lbImportBtn');
+    importBtn.disabled = true;
+    importBtn.innerHTML = '<span class="spinner"></span>导入中...';
+
+    const requestBody = {
+        songs: songs.map(song => ({
+            name: song.name,
+            singer: song.singer,
+            album: song.album,
+            source: song.source,
+            musicId: song.musicId || song.music_id,
+            img: song.img,
+            hash: song.hash,
+            songmid: song.songmid,
+            strMediaMid: song.strMediaMid,
+            albumMid: song.albumMid,
+            copyrightId: song.copyrightId,
+            albumId: song.albumId,
+            duration: song.duration,
+            types: song.types
+        })),
+        quality,
+        playlist_id: playlistId,
+        new_playlist_name: newPlaylistName
+    };
+
+    try {
+        const response = await fetch(`${API_BASE}/songs/import`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+            body: JSON.stringify(requestBody)
+        });
+        const result = await response.json();
+        if (result.code === 0) {
+            const data = result.data;
+            progressFill.style.width = '100%';
+            progressText.textContent = `导入完成：成功 ${data.success} 首，失败 ${data.failed} 首`;
+            importResultsEl.innerHTML = (data.results || []).map(item =>
+                item.success
+                    ? `<div class="import-result-item success">✓ ${escapeHtml(item.name)}</div>`
+                    : `<div class="import-result-item error">✗ ${escapeHtml(item.name)}: ${escapeHtml(item.error)}</div>`
+            ).join('');
+            if (result.data && result.data.warning) {
+                showSnackbar(result.data.warning, 'warning', 5000);
+            }
+            if (data.success > 0) {
+                showSnackbar(`成功导入 ${data.success} 首歌曲`, 'success');
+                lbSelectedSongs.clear();
+                lbUpdateSelectedCount();
+                loadPlaylists();
+            }
+            if (data.failed > 0) showSnackbar(`${data.failed} 首歌曲导入失败`, 'error');
+        } else {
+            const msg = result.msg || '未知错误';
+            const friendlyMsg = msg.includes('音源') ? '未配置有效的音源，无法获取播放链接。请先前往音源管理导入音源。' : msg;
+            progressText.textContent = '导入失败: ' + friendlyMsg;
+            showSnackbar('导入失败: ' + friendlyMsg, 'error');
+        }
+    } catch (e) {
+        progressText.textContent = '导入失败: ' + e.message;
+        showSnackbar('导入失败: ' + e.message, 'error');
+    } finally {
+        importBtn.disabled = lbSelectedSongs.size === 0;
+        importBtn.innerHTML = `导入选中 <span id="lbSelectedBadge" class="badge">${lbSelectedSongs.size}</span>`;
     }
 }
