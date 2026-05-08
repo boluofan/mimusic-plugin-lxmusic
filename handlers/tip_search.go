@@ -40,21 +40,7 @@ func (h *TipSearchHandler) HandleTipSearch(req *http.Request) (*plugin.RouterRes
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取搜索联想失败: "+err.Error()), nil
 	}
 
-	if isTVRequest(req) {
-		body, _ := json.Marshal(list)
-		return &plugin.RouterResponse{
-			StatusCode: http.StatusOK,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       body,
-		}, nil
-	}
-
-	response := map[string]interface{}{
-		"code": 0,
-		"msg":  "success",
-		"data": list,
-	}
-	body, _ := json.Marshal(response)
+	body, _ := json.Marshal(list)
 	return &plugin.RouterResponse{
 		StatusCode: http.StatusOK,
 		Headers:    map[string]string{"Content-Type": "application/json"},

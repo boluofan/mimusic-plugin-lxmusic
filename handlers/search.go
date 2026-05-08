@@ -22,14 +22,12 @@ import (
 	"github.com/mimusic-org/plugin/api/plugin"
 )
 
-// SearchHandler 搜索处理器
 type SearchHandler struct {
 	registry       *musicsdk.Registry
 	runtimeManager *engine.RuntimeManager
 	urlmapStore    *urlmap.Store
 }
 
-// NewSearchHandler 创建搜索处理器
 func NewSearchHandler(registry *musicsdk.Registry, runtimeManager *engine.RuntimeManager, urlmapStore *urlmap.Store) *SearchHandler {
 	return &SearchHandler{
 		registry:       registry,
@@ -38,62 +36,34 @@ func NewSearchHandler(registry *musicsdk.Registry, runtimeManager *engine.Runtim
 	}
 }
 
-// HandleSearch 搜索歌曲（使用 musicsdk 原生搜索）
-// GET /lxmusic/api/search?keyword=xxx&source_id=xxx&page=1
 func (h *SearchHandler) HandleSearch(req *http.Request) (*plugin.RouterResponse, error) {
 	keyword := req.URL.Query().Get("keyword")
-	//TV端接口兼容
-	if keyword == "" {
-		keyword = req.URL.Query().Get("name")
-	}
-	sourceID := getSourceID(req)
-	pageStr := req.URL.Query().Get("page")
-
 	if keyword == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 keyword 参数"), nil
 	}
 
+	sourceID := req.URL.Query().Get("source")
 	if sourceID == "" {
-		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
 
-	// 解析页码
-	page := 1
-	if pageStr != "" {
-		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
-			page = p
-		}
+	page, _ := strconv.Atoi(req.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
 	}
 
-	// 从 registry 获取对应平台的 Searcher
 	searcher, ok := h.registry.Get(sourceID)
 	if !ok {
 		return plugin.ErrorResponse(http.StatusBadRequest, "不支持的平台: "+sourceID), nil
 	}
 
-	// 执行搜索
 	result, err := searcher.Search(keyword, page, 30)
 	if err != nil {
-		slog.Error("搜索失败", "source_id", sourceID, "keyword", keyword, "error", err)
+		slog.Error("搜索失败", "source", sourceID, "keyword", keyword, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "搜索失败: "+err.Error()), nil
 	}
 
-	// 返回结果
-	if isTVRequest(req) {
-		body, _ := json.Marshal(result.List)
-		return &plugin.RouterResponse{
-			StatusCode: http.StatusOK,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       body,
-		}, nil
-	}
-
-	response := map[string]interface{}{
-		"code": 0,
-		"msg":  "success",
-		"data": result,
-	}
-	body, _ := json.Marshal(response)
+	body, _ := json.Marshal(result)
 	return &plugin.RouterResponse{
 		StatusCode: http.StatusOK,
 		Headers:    map[string]string{"Content-Type": "application/json"},
@@ -101,26 +71,10 @@ func (h *SearchHandler) HandleSearch(req *http.Request) (*plugin.RouterResponse,
 	}, nil
 }
 
-// HandleListPlatforms 列出内置平台
-// GET /lxmusic/api/platforms
 func (h *SearchHandler) HandleListPlatforms(req *http.Request) (*plugin.RouterResponse, error) {
 	platforms := h.registry.All()
 
-	if isTVRequest(req) {
-		body, _ := json.Marshal(platforms)
-		return &plugin.RouterResponse{
-			StatusCode: http.StatusOK,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       body,
-		}, nil
-	}
-
-	response := map[string]interface{}{
-		"code": 0,
-		"msg":  "success",
-		"data": platforms,
-	}
-	body, _ := json.Marshal(response)
+	body, _ := json.Marshal(platforms)
 	return &plugin.RouterResponse{
 		StatusCode: http.StatusOK,
 		Headers:    map[string]string{"Content-Type": "application/json"},
@@ -128,7 +82,6 @@ func (h *SearchHandler) HandleListPlatforms(req *http.Request) (*plugin.RouterRe
 	}, nil
 }
 
-// ImportSongsRequest 导入歌曲请求
 type ImportSongsRequest struct {
 	Songs           []musicsdk.SearchItem `json:"songs"`
 	Quality         string                `json:"quality"`
@@ -136,15 +89,12 @@ type ImportSongsRequest struct {
 	NewPlaylistName string                `json:"new_playlist_name"`
 }
 
-// ImportResult 导入结果
 type ImportResult struct {
 	Name    string `json:"name"`
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
 }
 
-// HandleImportSongs 批量导入歌曲
-// POST /lxmusic/api/songs/import
 func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResponse, error) {
 	var request ImportSongsRequest
 	if err := json.NewDecoder(req.Body).Decode(&request); err != nil {
@@ -167,7 +117,6 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 	failedCount := 0
 	var importedSongIDs []int64
 
-	// 第一步：为每首歌曲构建 songInfo，收集到批处理列表
 	type batchItem struct {
 		song     musicsdk.SearchItem
 		hash     string
@@ -176,11 +125,9 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 	}
 	var batch []batchItem
 
-	// 收集所有待写入的 PutBatchItem
 	var putBatchItems []urlmap.PutBatchItem
 
 	for _, song := range request.Songs {
-		// 归一化：musicId 和 songmid 互为 fallback（wy/kw 的 musicId 与 songmid 是同一个值）
 		musicID := song.MusicID
 		if musicID == "" {
 			musicID = song.Songmid
@@ -190,21 +137,13 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 			songmid = song.MusicID
 		}
 
-		slog.Info("导入歌曲原始数据", "name", song.Name, "source", song.Source, "musicId", musicID, "songmid", songmid, "hash", song.Hash, "copyrightId", song.CopyrightId)
-
-		// 构建 songInfo（包含各平台歌词获取器所需的所有字段）
-		// - wy: musicId
-		// - tx: songmid
-		// - kg: name, singer, hash, duration
-		// - kw: musicId
-		// - mg: copyrightId
 		songInfo := map[string]interface{}{
 			"name":     song.Name,
 			"singer":   song.Singer,
 			"album":    song.Album,
 			"source":   song.Source,
 			"musicId":  musicID,
-			"duration": song.Duration, // kg 平台歌词获取需要
+			"duration": song.Duration,
 		}
 		if song.Hash != "" {
 			songInfo["hash"] = song.Hash
@@ -233,7 +172,6 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 		batch = append(batch, batchItem{song: song, songInfo: songInfo})
 	}
 
-	// 批量生成 hash，只执行一次磁盘持久化（替代循环内逐个 Put + save）
 	if len(putBatchItems) > 0 {
 		hashes, err := h.urlmapStore.PutBatch(putBatchItems)
 		if err != nil {
@@ -246,7 +184,7 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 				})
 				failedCount++
 			}
-			batch = nil // 清空 batch，跳过后续步骤
+			batch = nil
 		} else {
 			for i := range batch {
 				batch[i].hash = hashes[i]
@@ -255,7 +193,6 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 		}
 	}
 
-	// 第二步：如果有成功生成 hash 的条目，一次批量调用主程序 API
 	if len(batch) > 0 {
 		var batchBody []map[string]interface{}
 		for _, item := range batch {
@@ -290,7 +227,6 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 				errMsg += ": " + resp.Message
 			}
 			slog.Error(errMsg, "count", len(batch))
-			// 批量请求失败，所有 batch 项均为失败
 			for _, item := range batch {
 				results = append(results, ImportResult{
 					Name:    item.song.Name,
@@ -300,7 +236,6 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 				failedCount++
 			}
 		} else {
-			// 解析响应获取新添加歌曲的 ID
 			var addResp struct {
 				Songs []struct {
 					ID int64 `json:"id"`
@@ -318,7 +253,6 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 				successCount++
 				slog.Info("歌曲导入成功", "name", item.song.Name, "hash", item.hash)
 
-				// 第三步：收集成功导入的歌曲 ID（歌词改为延迟加载）
 				if i < len(addResp.Songs) {
 					songID := addResp.Songs[i].ID
 					if songID > 0 {
@@ -329,11 +263,9 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 		}
 	}
 
-	// 第四步：歌单处理
 	playlistID := request.PlaylistID
 	playlistName := ""
 
-	// 如果需要新建歌单
 	if request.NewPlaylistName != "" {
 		createBody, _ := json.Marshal(map[string]string{
 			"name": request.NewPlaylistName,
@@ -359,7 +291,6 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 		}
 	}
 
-	// 将成功导入的歌曲添加到歌单
 	if playlistID > 0 && len(importedSongIDs) > 0 {
 		addToPlaylistBody, _ := json.Marshal(map[string]interface{}{
 			"song_ids": importedSongIDs,
@@ -373,13 +304,10 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 			slog.Error("添加歌曲到歌单失败", "playlistID", playlistID, "error", err)
 		} else {
 			slog.Info("歌曲已添加到歌单", "playlistID", playlistID, "count", len(importedSongIDs))
-
-			// 如果歌单没有封面，随机选一个导入歌曲的封面设置到歌单
 			h.setPlaylistCoverIfEmpty(req, hostFunctions, playlistID, request.Songs)
 		}
 	}
 
-	// 返回结果统计
 	responseData := map[string]interface{}{
 		"total":         len(request.Songs),
 		"success":       successCount,
@@ -389,17 +317,11 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 		"playlist_name": playlistName,
 	}
 
-	// 检查是否有可用音源，无可用音源时附带警告
 	if h.runtimeManager.Count() == 0 {
 		responseData["warning"] = "注意：当前未配置有效的洛雪音源，导入的歌曲暂时无法播放。请在「音源管理」中导入音源脚本。"
 	}
 
-	response := map[string]interface{}{
-		"code": 0,
-		"msg":  "success",
-		"data": responseData,
-	}
-	body, _ := json.Marshal(response)
+	body, _ := json.Marshal(responseData)
 	return &plugin.RouterResponse{
 		StatusCode: http.StatusOK,
 		Headers:    map[string]string{"Content-Type": "application/json"},
@@ -407,9 +329,7 @@ func (h *SearchHandler) HandleImportSongs(req *http.Request) (*plugin.RouterResp
 	}, nil
 }
 
-// setPlaylistCoverIfEmpty 如果歌单没有封面，随机选一个导入歌曲的封面设置到歌单
 func (h *SearchHandler) setPlaylistCoverIfEmpty(req *http.Request, hostFunctions pbplugin.HostFunctions, playlistID int64, songs []musicsdk.SearchItem) {
-	// 收集有封面的歌曲
 	var songsWithCover []musicsdk.SearchItem
 	for _, song := range songs {
 		if song.Img != "" {
@@ -420,7 +340,6 @@ func (h *SearchHandler) setPlaylistCoverIfEmpty(req *http.Request, hostFunctions
 		return
 	}
 
-	// 获取歌单详情，检查是否已有封面
 	getResp, err := hostFunctions.CallRouter(req.Context(), &pbplugin.CallRouterRequest{
 		Method: "GET",
 		Path:   fmt.Sprintf("/api/v1/playlists/%d", playlistID),
@@ -441,15 +360,12 @@ func (h *SearchHandler) setPlaylistCoverIfEmpty(req *http.Request, hostFunctions
 		return
 	}
 
-	// 歌单已有封面，无需设置
 	if playlist.CoverPath != "" || playlist.CoverURL != "" {
 		return
 	}
 
-	// 随机选一个有封面的歌曲
 	selectedSong := songsWithCover[rand.Intn(len(songsWithCover))]
 
-	// 更新歌单封面
 	updateBody, _ := json.Marshal(map[string]interface{}{
 		"name":      playlist.Name,
 		"type":      playlist.Type,
@@ -468,63 +384,7 @@ func (h *SearchHandler) setPlaylistCoverIfEmpty(req *http.Request, hostFunctions
 	slog.Info("已为歌单设置封面", "playlistID", playlistID, "coverURL", selectedSong.Img)
 }
 
-// fetchAndUpdateLyric 获取歌词并更新到歌曲库（失败时静默跳过）
-func (h *SearchHandler) fetchAndUpdateLyric(req *http.Request, hostFunctions pbplugin.HostFunctions, songID int64, source string, songInfo map[string]interface{}) {
-	// 获取对应平台的 LyricFetcher
-	fetcher, ok := h.registry.GetLyricFetcher(source)
-	if !ok {
-		slog.Debug("平台不支持歌词获取", "source", source)
-		return
-	}
-
-	// 获取歌词
-	result, err := fetcher.GetLyric(songInfo)
-	if err != nil {
-		slog.Warn("获取歌词失败", "songID", songID, "source", source, "error", err)
-		return
-	}
-
-	// 检查歌词是否为空
-	if result.Lyric == "" {
-		slog.Debug("歌词为空", "songID", songID, "source", source)
-		return
-	}
-
-	// 调用 PUT /api/v1/songs/{id}/lyrics 更新歌词
-	lyricPayload := map[string]string{
-		"lyrics":       result.Lyric,
-		"lyric_source": "scraped",
-	}
-	lyricBody, _ := json.Marshal(lyricPayload)
-
-	lyricResp, err := hostFunctions.CallRouter(req.Context(), &pbplugin.CallRouterRequest{
-		Method: "PUT",
-		Path:   fmt.Sprintf("/api/v1/songs/%d/lyrics", songID),
-		Body:   lyricBody,
-	})
-
-	if err != nil || !lyricResp.Success {
-		errMsg := "更新歌词失败"
-		if err != nil {
-			errMsg += ": " + err.Error()
-		} else {
-			errMsg += ": " + lyricResp.Message
-		}
-		slog.Warn(errMsg, "songID", songID)
-		return
-	}
-
-	slog.Info("歌词更新成功", "songID", songID, "source", source)
-}
-
-// HandleGetLyric 通过 hash 获取歌词（延迟加载 + 缓存写回）
-// GET /lxmusic/api/lyric/url/{hash}
-// 流程：
-// 1. 通过 cache_hash 查主程序 DB 中的歌曲
-// 2. 如果 lyric_source != "url"（已缓存），直接返回 lyric 文本
-// 3. 如果 lyric_source == "url"，从平台获取歌词，写回 DB，返回歌词
 func (h *SearchHandler) HandleGetLyric(req *http.Request) (*plugin.RouterResponse, error) {
-	// 1. 从 URL path 提取 hash
 	path := req.URL.Path
 	hash := path[strings.LastIndex(path, "/")+1:]
 	if hash == "" {
@@ -533,7 +393,6 @@ func (h *SearchHandler) HandleGetLyric(req *http.Request) (*plugin.RouterRespons
 
 	hostFunctions := pbplugin.NewHostFunctions()
 
-	// 2. 查主程序 DB：GET /api/v1/songs?cache_hash={hash}&limit=1
 	queryPath := "/api/v1/songs?cache_hash=" + hash + "&limit=1"
 	songResp, err := hostFunctions.CallRouter(req.Context(), &pbplugin.CallRouterRequest{
 		Method: "GET",
@@ -551,12 +410,10 @@ func (h *SearchHandler) HandleGetLyric(req *http.Request) (*plugin.RouterRespons
 		if json.Unmarshal(songResp.Body, &listResp) == nil && len(listResp.Songs) > 0 {
 			song := listResp.Songs[0]
 
-			// 3. 已缓存：lyric_source 不是 "url"，直接返回歌词文本
 			if song.LyricSource != "url" {
 				return h.lyricResponse(song.Lyric), nil
 			}
 
-			// 4. 未缓存：从平台获取歌词
 			mapping, exists := h.urlmapStore.Get(hash)
 			if !exists {
 				return plugin.ErrorResponse(http.StatusNotFound, "URL mapping not found"), nil
@@ -572,7 +429,6 @@ func (h *SearchHandler) HandleGetLyric(req *http.Request) (*plugin.RouterRespons
 				return plugin.ErrorResponse(http.StatusInternalServerError, "failed to fetch lyric: "+err.Error()), nil
 			}
 
-			// 5. 写回 DB：PUT /api/v1/songs/{id}/lyrics
 			if result.Lyric != "" && song.ID > 0 {
 				lyricPayload, _ := json.Marshal(map[string]string{
 					"lyrics":       result.Lyric,
@@ -589,7 +445,6 @@ func (h *SearchHandler) HandleGetLyric(req *http.Request) (*plugin.RouterRespons
 		}
 	}
 
-	// 回退：DB 中没有对应歌曲记录，直接从平台获取（不写回）
 	mapping, exists := h.urlmapStore.Get(hash)
 	if !exists {
 		return plugin.ErrorResponse(http.StatusNotFound, "URL mapping not found"), nil
@@ -605,8 +460,6 @@ func (h *SearchHandler) HandleGetLyric(req *http.Request) (*plugin.RouterRespons
 	return h.lyricResponse(result.Lyric), nil
 }
 
-// lyricResponse 构建歌词 JSON 响应
-// 歌词一旦获取就不会变化（首次从平台获取后写回 DB），因此使用永久缓存头
 func (h *SearchHandler) lyricResponse(lyric string) *plugin.RouterResponse {
 	response := map[string]interface{}{
 		"code": 0,
@@ -623,22 +476,15 @@ func (h *SearchHandler) lyricResponse(lyric string) *plugin.RouterResponse {
 	}
 }
 
-// HandleGetMusicUrl 获取播放 URL（通过 hash 查找）
-// GET /lxmusic/api/music/url/{hash}
-// 此路由不需要认证，主程序播放时直接调用
-// 流程：检查主程序缓存 → 命中则重定向到缓存接口 → 未命中则获取 CDN URL 并重定向到缓存接口（带 url 参数）
 func (h *SearchHandler) HandleGetMusicUrl(req *http.Request) (*plugin.RouterResponse, error) {
-	// 1. 从 URL path 提取 hash
 	path := req.URL.Path
 	hash := path[strings.LastIndex(path, "/")+1:]
 	if hash == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 hash 参数"), nil
 	}
 
-	// 透传 access_token
 	accessToken := req.URL.Query().Get("access_token")
 
-	// 2. 通过 CallRouter HEAD 请求检查主程序缓存是否存在（内部调用，无网络开销）
 	hostFunctions := pbplugin.NewHostFunctions()
 	cachePath := "/api/v1/cache/" + hash
 	if accessToken != "" {
@@ -649,7 +495,6 @@ func (h *SearchHandler) HandleGetMusicUrl(req *http.Request) (*plugin.RouterResp
 		Path:   cachePath,
 	})
 	if err == nil && cacheResp.StatusCode == http.StatusOK {
-		// 缓存命中：直接重定向到 cache 接口，不调用 JS runtime
 		slog.Info("缓存命中，跳过 URL 解析", "hash", hash)
 		redirectURL := fmt.Sprintf("/api/v1/cache/%s", hash)
 		if accessToken != "" {
@@ -661,7 +506,6 @@ func (h *SearchHandler) HandleGetMusicUrl(req *http.Request) (*plugin.RouterResp
 		}, nil
 	}
 
-	// 3. 缓存未命中：查 urlmap
 	mapping, exists := h.urlmapStore.Get(hash)
 	if !exists {
 		return plugin.ErrorResponse(http.StatusNotFound, "URL 映射不存在"), nil
@@ -669,7 +513,6 @@ func (h *SearchHandler) HandleGetMusicUrl(req *http.Request) (*plugin.RouterResp
 
 	slog.Info("缓存未命中，获取播放 URL", "hash", hash, "platform", mapping.Platform, "quality", mapping.Quality)
 
-	// 4. 调用 JS runtime 获取 CDN URL
 	musicUrl, err := h.runtimeManager.GetMusicUrl(mapping.Platform, mapping.Quality, mapping.SongInfo)
 	if err != nil {
 		slog.Error("获取播放 URL 失败", "hash", hash, "error", err)
@@ -687,7 +530,6 @@ func (h *SearchHandler) HandleGetMusicUrl(req *http.Request) (*plugin.RouterResp
 
 	slog.Info("获取播放 URL 成功，重定向到缓存接口", "hash", hash, "url", musicUrl)
 
-	// 5. 302 重定向到主程序缓存接口，带上 CDN URL
 	redirectURL := fmt.Sprintf("/api/v1/cache/%s?url=%s", hash, url.QueryEscape(musicUrl))
 	if accessToken != "" {
 		redirectURL += "&access_token=" + url.QueryEscape(accessToken)
@@ -701,46 +543,28 @@ func (h *SearchHandler) HandleGetMusicUrl(req *http.Request) (*plugin.RouterResp
 	}, nil
 }
 
-// HandleTVMusicUrl TV 客户端获取播放链接
-// POST /lxmusic/api/tv/music/url
-// Body: {"songInfo":{"source":"mg","songmid":"xxx","name":"..."},"quality":"320k"}
+// HandleMusicUrl 获取播放链接
+// POST /lxmusic/api/music/url
+// Body: {"source":"mg","songmid":"xxx","quality":"320k"}
 // Response: {"url": "https://...", "type": "320k", "source": "mg"}
-func (h *SearchHandler) HandleTVMusicUrl(req *http.Request) (*plugin.RouterResponse, error) {
+func (h *SearchHandler) HandleMusicUrl(req *http.Request) (*plugin.RouterResponse, error) {
 	if req.Method != http.MethodPost {
 		return plugin.ErrorResponse(http.StatusMethodNotAllowed, "只支持 POST 方法"), nil
 	}
 
-	// 支持两种格式：
-	// 1. {"source":"mg","songmid":"xxx","quality":"320k"}
-	// 2. {"songInfo":{"source":"mg","songmid":"xxx","name":"..."},"quality":"320k"}
 	var body struct {
-		Source   string `json:"source"`
-		Songmid  string `json:"songmid"`
-		Quality  string `json:"quality"`
-		SongInfo *struct {
-			Source  string `json:"source"`
-			Songmid string `json:"songmid"`
-			Name    string `json:"name"`
-		} `json:"songInfo"`
+		Source  string `json:"source"`
+		Songmid string `json:"songmid"`
+		Quality string `json:"quality"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		return plugin.ErrorResponse(http.StatusBadRequest, "无效的请求参数: "+err.Error()), nil
 	}
 
-	// 如果 source/songmid 在顶层没有，就从 songInfo 里取
-	source := body.Source
-	songmid := body.Songmid
-	if source == "" && body.SongInfo != nil {
-		source = body.SongInfo.Source
-	}
-	if songmid == "" && body.SongInfo != nil {
-		songmid = body.SongInfo.Songmid
-	}
-
-	if source == "" {
+	if body.Source == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
-	if songmid == "" {
+	if body.Songmid == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 songmid 参数"), nil
 	}
 
@@ -750,13 +574,19 @@ func (h *SearchHandler) HandleTVMusicUrl(req *http.Request) (*plugin.RouterRespo
 	}
 
 	songInfo := map[string]interface{}{
-		"source":  source,
-		"songmid": songmid,
+		"source":  body.Source,
+		"songmid": body.Songmid,
 	}
 
-	musicUrl, err := h.runtimeManager.GetMusicUrl(source, quality, songInfo)
+	musicUrl, err := h.runtimeManager.GetMusicUrl(body.Source, quality, songInfo)
 	if err != nil {
-		slog.Error("TV 获取播放 URL 失败", "source", source, "songmid", songmid, "error", err)
+		slog.Error("获取播放 URL 失败", "source", body.Source, "songmid", body.Songmid, "error", err)
+		if errors.Is(err, engine.ErrNoSourceLoaded) {
+			return plugin.ErrorResponse(http.StatusServiceUnavailable, "尚未配置有效的洛雪音源，无法获取播放链接。请在「音源管理」中导入并启用音源脚本。"), nil
+		}
+		if errors.Is(err, engine.ErrPlatformNotSupported) {
+			return plugin.ErrorResponse(http.StatusServiceUnavailable, "当前没有支持该平台的音源，请导入支持该平台的音源脚本。"), nil
+		}
 		return plugin.ErrorResponse(http.StatusBadGateway, "获取播放 URL 失败: "+err.Error()), nil
 	}
 
@@ -767,7 +597,7 @@ func (h *SearchHandler) HandleTVMusicUrl(req *http.Request) (*plugin.RouterRespo
 	response := map[string]interface{}{
 		"url":    musicUrl,
 		"type":   quality,
-		"source": source,
+		"source": body.Source,
 	}
 	respBody, _ := json.Marshal(response)
 	return &plugin.RouterResponse{
@@ -777,10 +607,10 @@ func (h *SearchHandler) HandleTVMusicUrl(req *http.Request) (*plugin.RouterRespo
 	}, nil
 }
 
-// HandleTVLyric TV 客户端获取歌词
-// GET /lxmusic/api/tv/lyric?source=kw&songmid=xxx&quality=320k
+// HandleLyric 获取歌词
+// GET /lxmusic/api/music/lyric?source=kw&songmid=xxx
 // Response: {"lyric": "...", "tlyric": "...", "rlyric": "...", "lxlyric": "..."}
-func (h *SearchHandler) HandleTVLyric(req *http.Request) (*plugin.RouterResponse, error) {
+func (h *SearchHandler) HandleLyric(req *http.Request) (*plugin.RouterResponse, error) {
 	source := req.URL.Query().Get("source")
 	if source == "" {
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
@@ -803,7 +633,7 @@ func (h *SearchHandler) HandleTVLyric(req *http.Request) (*plugin.RouterResponse
 
 	result, err := fetcher.GetLyric(songInfo)
 	if err != nil {
-		slog.Error("TV 获取歌词失败", "source", source, "songmid", songmid, "error", err)
+		slog.Error("获取歌词失败", "source", source, "songmid", songmid, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取歌词失败: "+err.Error()), nil
 	}
 

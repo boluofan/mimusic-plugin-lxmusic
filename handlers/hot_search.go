@@ -25,39 +25,19 @@ func (h *HotSearchHandler) HandleHotSearch(req *http.Request) (*plugin.RouterRes
 		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
 
-	var list []string
-	var err error
-
 	fetcher, ok := h.registry.GetHotSearchFetcher("hotsearch")
 	if !ok {
 		return plugin.ErrorResponse(http.StatusInternalServerError, "hotsearch fetcher not found"), nil
 	}
-	list, err = fetcher.GetHotSearch(source)
+	list, err := fetcher.GetHotSearch(source)
 	if err != nil {
 		slog.Error("获取热搜失败", "source", source, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取热搜失败: "+err.Error()), nil
 	}
 
-	if isTVRequest(req) {
-		response := map[string]interface{}{
-			"source": source,
-			"list":   list,
-		}
-		body, _ := json.Marshal(response)
-		return &plugin.RouterResponse{
-			StatusCode: http.StatusOK,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       body,
-		}, nil
-	}
-
 	response := map[string]interface{}{
-		"code": 0,
-		"msg":  "success",
-		"data": map[string]interface{}{
-			"source": source,
-			"list":   list,
-		},
+		"source": source,
+		"list":   list,
 	}
 	body, _ := json.Marshal(response)
 	return &plugin.RouterResponse{

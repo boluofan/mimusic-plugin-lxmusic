@@ -108,13 +108,25 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	p.registry.RegisterSongListProvider(musicsdk.NewMgSongListProvider())
 	slog.Info("已注册内置平台歌单提供者", "count", 5)
 
-	// 注册热搜获取器
-	p.registry.RegisterHotSearchFetcher(musicsdk.NewHotSearchHandler())
+	// 注册热搜获取器（各平台独立实现）
+	p.registry.RegisterHotSearchFetcher(musicsdk.NewKgHotSearchFetcher())
+	p.registry.RegisterHotSearchFetcher(musicsdk.NewKwHotSearchFetcher())
+	p.registry.RegisterHotSearchFetcher(musicsdk.NewWyHotSearchFetcher())
+	p.registry.RegisterHotSearchFetcher(musicsdk.NewTxHotSearchFetcher())
+	p.registry.RegisterHotSearchFetcher(musicsdk.NewMgHotSearchFetcher())
 	// 注册排行榜提供者
-	p.registry.RegisterLeaderboardProvider(musicsdk.NewLeaderboardHandler())
+	p.registry.RegisterLeaderboardProvider(musicsdk.NewKgLeaderboardProvider())
+	p.registry.RegisterLeaderboardProvider(musicsdk.NewKwLeaderboardProvider())
+	p.registry.RegisterLeaderboardProvider(musicsdk.NewWyLeaderboardProvider())
+	p.registry.RegisterLeaderboardProvider(musicsdk.NewTxLeaderboardProvider())
+	p.registry.RegisterLeaderboardProvider(musicsdk.NewMgLeaderboardProvider())
 	// 注册搜索联想提供者
-	p.registry.RegisterTipSearchProvider(musicsdk.NewTipSearchHandler())
-	slog.Info("已注册内置平台热搜、排行榜、联想词提供者", "count", 5)
+	p.registry.RegisterTipSearchProvider(musicsdk.NewKgTipSearchProvider())
+	p.registry.RegisterTipSearchProvider(musicsdk.NewKwTipSearchProvider())
+	p.registry.RegisterTipSearchProvider(musicsdk.NewWyTipSearchProvider())
+	p.registry.RegisterTipSearchProvider(musicsdk.NewTxTipSearchProvider())
+	p.registry.RegisterTipSearchProvider(musicsdk.NewMgTipSearchProvider())
+	slog.Info("已注册内置平台热搜、排行榜、联想词提供者", "count", 15)
 
 	// 5. 初始化 urlmap.Store
 	p.urlmapStore, err = urlmap.NewStore(dataDir)
@@ -168,6 +180,9 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 
 	// 获取歌词（不需要认证，延迟加载时主程序直接调用）
 	routerManager.RegisterRouter(ctx, "GET", "/api/lyric/url/{hash}", p.searchHandler.HandleGetLyric, false)
+	// 播放URL和歌词
+	routerManager.RegisterRouter(ctx, "POST", "/api/music/url", p.searchHandler.HandleMusicUrl)
+	routerManager.RegisterRouter(ctx, "GET", "/api/music/lyric", p.searchHandler.HandleLyric)
 
 	// 歌单（需要认证）
 	routerManager.RegisterRouter(ctx, "GET", "/api/songlist/tags", p.songlistHandler.HandleGetTags, true)
@@ -183,27 +198,6 @@ func (p *Plugin) Init(ctx context.Context, request *pbplugin.InitRequest) (*empt
 	routerManager.RegisterRouter(ctx, "GET", "/api/hotSearch", p.hotSearchHandler.HandleHotSearch, false)
 	// 搜索联想
 	routerManager.RegisterRouter(ctx, "GET", "/api/tipSearch", p.tipSearchHandler.HandleTipSearch, false)
-
-	// TV 客户端专用接口（与上述接口一一对应）
-	// 搜索
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/search", p.searchHandler.HandleSearch)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/platforms", p.searchHandler.HandleListPlatforms)
-	// 播放URL和歌词
-	routerManager.RegisterRouter(ctx, "POST", "/api/tv/url", p.searchHandler.HandleTVMusicUrl)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/lyric", p.searchHandler.HandleTVLyric)
-	// 歌单
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/tags", p.songlistHandler.HandleGetTags)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/list", p.songlistHandler.HandleGetList)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/detail", p.songlistHandler.HandleGetDetail)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/search", p.songlistHandler.HandleSearch)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/songList/sorts", p.songlistHandler.HandleGetSorts)
-	// 排行榜
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/leaderboard/boards", p.leaderboardHandler.HandleGetBoards)
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/leaderboard/list", p.leaderboardHandler.HandleGetList)
-	// 热搜
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/hotSearch", p.hotSearchHandler.HandleHotSearch, false)
-	// 搜索联想
-	routerManager.RegisterRouter(ctx, "GET", "/api/tv/tipSearch", p.tipSearchHandler.HandleTipSearch)
 
 	slog.Info("洛雪音源插件路由注册完成")
 	return &emptypb.Empty{}, nil

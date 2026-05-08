@@ -25,11 +25,11 @@ func NewSongListHandler(registry *musicsdk.Registry) *SongListHandler {
 }
 
 // HandleGetTags 获取指定平台的歌单标签
-// GET /lxmusic/api/songlist/tags?source_id=xx
+// GET /lxmusic/api/songlist/tags?source=xx
 func (h *SongListHandler) HandleGetTags(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := getSourceID(req)
+	sourceID := req.URL.Query().Get("source")
 	if sourceID == "" {
-		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
 
 	provider, ok := h.registry.GetSongListProvider(sourceID)
@@ -39,19 +39,19 @@ func (h *SongListHandler) HandleGetTags(req *http.Request) (*plugin.RouterRespon
 
 	result, err := provider.GetTags()
 	if err != nil {
-		slog.Error("获取歌单标签失败", "source_id", sourceID, "error", err)
+		slog.Error("获取歌单标签失败", "source", sourceID, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取标签失败: "+err.Error()), nil
 	}
 
-	return h.buildResponse(req, result, sourceID)
+	return h.buildResponse(result, sourceID)
 }
 
 // HandleGetList 获取歌单列表
-// GET /lxmusic/api/songlist/list?source_id=xx&sort_id=xx&tag_id=xx&page=1
+// GET /lxmusic/api/songlist/list?source=xx&sort_id=xx&tag_id=xx&page=1
 func (h *SongListHandler) HandleGetList(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := getSourceID(req)
+	sourceID := req.URL.Query().Get("source")
 	if sourceID == "" {
-		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
 
 	provider, ok := h.registry.GetSongListProvider(sourceID)
@@ -60,18 +60,7 @@ func (h *SongListHandler) HandleGetList(req *http.Request) (*plugin.RouterRespon
 	}
 
 	sortID := req.URL.Query().Get("sort_id")
-	//TV端接口兼容
-	if sortID == "" {
-		sortID = req.URL.Query().Get("sortId")
-	}
-	if isTVRequest(req) && sourceID == "tx" && sortID == "hot" {
-		sortID = "5"
-	}
 	tagID := req.URL.Query().Get("tag_id")
-	//TV端接口兼容
-	if tagID == "" {
-		tagID = req.URL.Query().Get("tagId")
-	}
 	page, _ := strconv.Atoi(req.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
@@ -79,19 +68,19 @@ func (h *SongListHandler) HandleGetList(req *http.Request) (*plugin.RouterRespon
 
 	result, err := provider.GetList(sortID, tagID, page)
 	if err != nil {
-		slog.Error("获取歌单列表失败", "source_id", sourceID, "error", err)
+		slog.Error("获取歌单列表失败", "source", sourceID, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取歌单列表失败: "+err.Error()), nil
 	}
 
-	return h.buildResponse(req, result, sourceID)
+	return h.buildResponse(result, sourceID)
 }
 
 // HandleGetDetail 获取歌单详情
-// GET /lxmusic/api/songlist/detail?source_id=xx&id=xxx&page=1
+// GET /lxmusic/api/songlist/detail?source=xx&id=xxx&page=1
 func (h *SongListHandler) HandleGetDetail(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := getSourceID(req)
+	sourceID := req.URL.Query().Get("source")
 	if sourceID == "" {
-		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
 
 	provider, ok := h.registry.GetSongListProvider(sourceID)
@@ -111,19 +100,19 @@ func (h *SongListHandler) HandleGetDetail(req *http.Request) (*plugin.RouterResp
 
 	result, err := provider.GetListDetail(id, page)
 	if err != nil {
-		slog.Error("获取歌单详情失败", "source_id", sourceID, "id", id, "error", err)
+		slog.Error("获取歌单详情失败", "source", sourceID, "id", id, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "获取歌单详情失败: "+err.Error()), nil
 	}
 
-	return h.buildResponse(req, result, sourceID)
+	return h.buildResponse(result, sourceID)
 }
 
 // HandleSearch 搜索歌单
-// GET /lxmusic/api/songlist/search?source_id=xx&keyword=xxx&page=1
+// GET /lxmusic/api/songlist/search?source=xx&keyword=xxx&page=1
 func (h *SongListHandler) HandleSearch(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := getSourceID(req)
+	sourceID := req.URL.Query().Get("source")
 	if sourceID == "" {
-		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
 
 	provider, ok := h.registry.GetSongListProvider(sourceID)
@@ -148,19 +137,19 @@ func (h *SongListHandler) HandleSearch(req *http.Request) (*plugin.RouterRespons
 
 	result, err := provider.SearchSongList(keyword, page, limit)
 	if err != nil {
-		slog.Error("搜索歌单失败", "source_id", sourceID, "keyword", keyword, "error", err)
+		slog.Error("搜索歌单失败", "source", sourceID, "keyword", keyword, "error", err)
 		return plugin.ErrorResponse(http.StatusInternalServerError, "搜索歌单失败: "+err.Error()), nil
 	}
 
-	return h.buildResponse(req, result, sourceID)
+	return h.buildResponse(result, sourceID)
 }
 
 // HandleGetSorts 获取排序选项
-// GET /lxmusic/api/songlist/sorts?source_id=xx
+// GET /lxmusic/api/songlist/sorts?source=xx
 func (h *SongListHandler) HandleGetSorts(req *http.Request) (*plugin.RouterResponse, error) {
-	sourceID := getSourceID(req)
+	sourceID := req.URL.Query().Get("source")
 	if sourceID == "" {
-		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source_id 参数"), nil
+		return plugin.ErrorResponse(http.StatusBadRequest, "缺少 source 参数"), nil
 	}
 
 	provider, ok := h.registry.GetSongListProvider(sourceID)
@@ -170,31 +159,10 @@ func (h *SongListHandler) HandleGetSorts(req *http.Request) (*plugin.RouterRespo
 
 	sortList := provider.GetSortList()
 
-	return h.buildResponse(req, sortList, sourceID)
+	return h.buildResponse(sortList, sourceID)
 }
 
-func (h *SongListHandler) buildResponse(req *http.Request, data interface{}, sourceID string) (*plugin.RouterResponse, error) {
-	if isTVRequest(req) {
-		return h.tvJsonResponse(data, sourceID)
-	}
-	return h.jsonResponse(data)
-}
-
-func (h *SongListHandler) jsonResponse(data interface{}) (*plugin.RouterResponse, error) {
-	response := map[string]interface{}{
-		"code": 0,
-		"msg":  "success",
-		"data": data,
-	}
-	body, _ := json.Marshal(response)
-	return &plugin.RouterResponse{
-		StatusCode: http.StatusOK,
-		Headers:    map[string]string{"Content-Type": "application/json"},
-		Body:       body,
-	}, nil
-}
-
-func (h *SongListHandler) tvJsonResponse(data interface{}, sourceID string) (*plugin.RouterResponse, error) {
+func (h *SongListHandler) buildResponse(data interface{}, sourceID string) (*plugin.RouterResponse, error) {
 	if sourceID == "" {
 		sourceID = "unknown"
 	}
@@ -206,7 +174,6 @@ func (h *SongListHandler) tvJsonResponse(data interface{}, sourceID string) (*pl
 		for i := range list {
 			if item, ok := list[i].(map[string]interface{}); ok {
 				item["source"] = sourceID
-				// 映射 MusicID 到 songmid（TV 应用期望 songmid 或 id）
 				if musicId, ok := item["musicId"].(string); ok && musicId != "" {
 					if _, hasSongmid := item["songmid"]; !hasSongmid {
 						item["songmid"] = musicId

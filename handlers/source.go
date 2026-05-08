@@ -39,16 +39,6 @@ func NewSourceHandler(manager *source.Manager, runtimeManager *engine.RuntimeMan
 func (h *SourceHandler) HandleListSources(req *http.Request) (*plugin.RouterResponse, error) {
 	sources := h.manager.ListSources()
 
-	if isTVRequest(req) {
-		body, _ := json.Marshal(sources)
-		return &plugin.RouterResponse{
-			StatusCode: http.StatusOK,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       body,
-		}, nil
-	}
-
-	// 构建响应（不包含 Script 字段，包含 Enabled 和 Platforms 字段）
 	type SourceItem struct {
 		ID          string   `json:"id"`
 		Name        string   `json:"name"`
@@ -63,7 +53,6 @@ func (h *SourceHandler) HandleListSources(req *http.Request) (*plugin.RouterResp
 
 	items := make([]SourceItem, 0, len(sources))
 	for _, s := range sources {
-		// 从 runtime 缓存中获取该音源支持的平台列表
 		var platforms []string
 		if sr, ok := h.runtimeManager.GetRuntime(s.ID); ok {
 			if cfg := sr.Config(); cfg != nil && cfg.Sources != nil {
@@ -90,13 +79,7 @@ func (h *SourceHandler) HandleListSources(req *http.Request) (*plugin.RouterResp
 		})
 	}
 
-	response := map[string]interface{}{
-		"code":        0,
-		"msg":         "success",
-		"data":        items,
-		"has_enabled": h.runtimeManager.Count() > 0,
-	}
-	body, _ := json.Marshal(response)
+	body, _ := json.Marshal(items)
 	return &plugin.RouterResponse{
 		StatusCode: http.StatusOK,
 		Headers:    map[string]string{"Content-Type": "application/json"},

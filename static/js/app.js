@@ -140,12 +140,12 @@ async function loadPlatforms() {
     try {
         const response = await fetch(`${API_BASE}/platforms`, { headers: getAuthHeaders() });
         const result = await response.json();
-        if (result.code === 0) {
+        if (result.success === true) {
             currentPlatforms = result.data || [];
-            renderPlatformSelect();
         } else {
-            showSnackbar('加载平台列表失败: ' + (result.msg || '未知错误'), 'error');
+            currentPlatforms = Array.isArray(result) ? result : [];
         }
+        renderPlatformSelect();
     } catch (e) {
         showSnackbar('加载平台列表失败: ' + e.message, 'error');
     }
@@ -196,12 +196,8 @@ async function checkSourceStatus() {
     try {
         const response = await fetch(`${API_BASE}/sources`, { headers: getAuthHeaders() });
         const result = await response.json();
-        if (result.code === 0) {
-            const sources = result.data || [];
-            hasEnabledSources = result.has_enabled || sources.some(s => s.enabled);
-        } else {
-            hasEnabledSources = false;
-        }
+        const sources = Array.isArray(result) ? result : (result.data || []);
+        hasEnabledSources = sources.some(s => s.enabled);
     } catch (e) {
         console.error('检查音源状态失败:', e);
     }
@@ -223,13 +219,12 @@ async function loadSources() {
     try {
         const response = await fetch(`${API_BASE}/sources`, { headers: getAuthHeaders() });
         const result = await response.json();
-        if (result.code === 0) {
+        if (result.success === true) {
             currentSources = result.data || [];
-            renderSources();
         } else {
-            showSnackbar('加载音源失败: ' + (result.message || result.error || '未知错误'), 'error');
-            container.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败</p></div>';
+            currentSources = Array.isArray(result) ? result : [];
         }
+        renderSources();
     } catch (e) {
         showSnackbar('加载音源失败: ' + e.message, 'error');
     }
@@ -376,17 +371,22 @@ async function search(keyword, platformId, page = 1) {
     searchBtn.innerHTML = '<span class="spinner"></span>搜索中...';
 
     try {
-        const params = new URLSearchParams({ keyword, source_id: platformId, page });
+        const params = new URLSearchParams({ keyword, source: platformId, page });
         const response = await fetch(`${API_BASE}/search?${params}`, { headers: getAuthHeaders() });
         const result = await response.json();
-        if (result.code === 0) {
-            searchResults = result.data.list || [];
-            totalResults = result.data.total || 0;
-            renderResults();
-            document.getElementById('resultSection').style.display = '';
+        if (result.success === true && result.data) {
+            if (Array.isArray(result.data)) {
+                searchResults = result.data;
+            } else {
+                searchResults = result.data.list || [];
+                totalResults = result.data.total || 0;
+            }
         } else {
-            showSnackbar('搜索失败: ' + (result.msg || '未知错误'), 'error');
+            searchResults = Array.isArray(result) ? result : (result.list || []);
+            totalResults = result.total || 0;
         }
+        renderResults();
+        document.getElementById('resultSection').style.display = '';
     } catch (e) {
         showSnackbar('搜索失败: ' + e.message, 'error');
     } finally {
@@ -572,27 +572,44 @@ async function importSelectedSongs() {
             body: JSON.stringify(requestBody)
         });
         const result = await response.json();
-        if (result.code === 0) {
-            const data = result.data;
+        let isSuccess = false;
+        let successCount = 0;
+        let failedCount = 0;
+        let results = [];
+        let warning = '';
+        if (result.data && typeof result.data.success === 'boolean') {
+            isSuccess = result.data.success;
+            successCount = result.data.success ? (result.data.data ? result.data.data.success : 0) : 0;
+            failedCount = result.data.data ? result.data.data.failed : 0;
+            results = result.data.data ? (result.data.data.results || []) : [];
+            warning = result.data.data ? (result.data.data.warning || '') : '';
+        } else if (result && typeof result.success === 'number') {
+            isSuccess = result.success > 0 || result.failed === 0;
+            successCount = result.success;
+            failedCount = result.failed;
+            results = result.results || [];
+            warning = result.warning || '';
+        }
+        if (isSuccess) {
             progressFill.style.width = '100%';
-            progressText.textContent = `导入完成：成功 ${data.success} 首，失败 ${data.failed} 首`;
-            importResultsEl.innerHTML = (data.results || []).map(item =>
+            progressText.textContent = `导入完成：成功 ${successCount} 首，失败 ${failedCount} 首`;
+            importResultsEl.innerHTML = results.map(item =>
                 item.success
                     ? `<div class="import-result-item success">✓ ${escapeHtml(item.name)}</div>`
                     : `<div class="import-result-item error">✗ ${escapeHtml(item.name)}: ${escapeHtml(item.error)}</div>`
             ).join('');
-            if (result.data && result.data.warning) {
-                showSnackbar(result.data.warning, 'warning', 5000);
+            if (warning) {
+                showSnackbar(warning, 'warning', 5000);
             }
-            if (data.success > 0) {
-                showSnackbar(`成功导入 ${data.success} 首歌曲`, 'success');
+            if (successCount > 0) {
+                showSnackbar(`成功导入 ${successCount} 首歌曲`, 'success');
                 selectedSongs.clear();
                 updateSelectedCount();
                 loadPlaylists();
             }
-            if (data.failed > 0) showSnackbar(`${data.failed} 首歌曲导入失败`, 'error');
+            if (failedCount > 0) showSnackbar(`${failedCount} 首歌曲导入失败`, 'error');
         } else {
-            const msg = result.msg || '未知错误';
+            const msg = result.message || result.error || '未知错误';
             const friendlyMsg = msg.includes('音源') ? '未配置有效的音源，无法获取播放链接。请先前往音源管理导入音源。' : msg;
             progressText.textContent = '导入失败: ' + friendlyMsg;
             showSnackbar('导入失败: ' + friendlyMsg, 'error');
@@ -803,13 +820,11 @@ async function loadSonglistTagsAndList() {
 
 async function slLoadTags() {
     try {
-        const resp = await fetch(`${API_BASE}/songlist/tags?source_id=${slCurrentPlatform}`, { headers: getAuthHeaders() });
+        const resp = await fetch(`${API_BASE}/songlist/tags?source=${slCurrentPlatform}`, { headers: getAuthHeaders() });
         const result = await resp.json();
-        if (result.code === 0) {
-            slTags = result.data;
-            slRenderTagChips();
-            document.getElementById('slTagCard').style.display = '';
-        }
+        slTags = result.success === true ? result.data : result;
+        slRenderTagChips();
+        document.getElementById('slTagCard').style.display = '';
     } catch (e) {
         console.error('加载标签失败:', e);
     }
@@ -817,13 +832,12 @@ async function slLoadTags() {
 
 async function slLoadSorts() {
     try {
-        const resp = await fetch(`${API_BASE}/songlist/sorts?source_id=${slCurrentPlatform}`, { headers: getAuthHeaders() });
+        const resp = await fetch(`${API_BASE}/songlist/sorts?source=${slCurrentPlatform}`, { headers: getAuthHeaders() });
         const result = await resp.json();
-        if (result.code === 0) {
-            slSortList = result.data || [];
-            if (slSortList.length > 0) slCurrentSortId = slSortList[0].id;
-            slRenderSortChips();
-        }
+        const data = result.success === true ? result.data : result;
+        slSortList = data.list || [];
+        if (slSortList.length > 0) slCurrentSortId = slSortList[0].id;
+        slRenderSortChips();
     } catch (e) {
         console.error('加载排序失败:', e);
     }
@@ -894,20 +908,17 @@ async function slLoadList(page) {
 
     try {
         const params = new URLSearchParams({
-            source_id: slCurrentPlatform,
+            source: slCurrentPlatform,
             sort_id: slCurrentSortId,
             tag_id: slCurrentTagId,
             page: page
         });
         const resp = await fetch(`${API_BASE}/songlist/list?${params}`, { headers: getAuthHeaders() });
         const result = await resp.json();
-        if (result.code === 0) {
-            slSongLists = result.data.list || [];
-            slTotalResults = result.data.total || 0;
-            slRenderGrid();
-        } else {
-            grid.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败</p></div>';
-        }
+        const data = result.success === true ? result.data : result;
+        slSongLists = data.list || [];
+        slTotalResults = data.total || 0;
+        slRenderGrid();
     } catch (e) {
         grid.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败: ' + escapeHtml(e.message) + '</p></div>';
     }
@@ -925,17 +936,14 @@ async function slSearchSonglist(keyword, page) {
     actionBtn.innerHTML = '<span class="spinner"></span>';
 
     try {
-        const params = new URLSearchParams({ source_id: slCurrentPlatform, keyword, page });
+        const params = new URLSearchParams({ source: slCurrentPlatform, keyword, page });
         const resp = await fetch(`${API_BASE}/songlist/search?${params}`, { headers: getAuthHeaders() });
         const result = await resp.json();
-        if (result.code === 0) {
-            slSongLists = result.data.list || [];
-            slTotalResults = result.data.total || 0;
-            slRenderGrid();
-            document.getElementById('slListCount').textContent = `共 ${slTotalResults} 条`;
-        } else {
-            grid.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">search_off</span><p>搜索失败</p></div>';
-        }
+        const data = result.success === true ? result.data : result;
+        slSongLists = data.list || [];
+        slTotalResults = data.total || 0;
+        slRenderGrid();
+        document.getElementById('slListCount').textContent = `共 ${slTotalResults} 条`;
     } catch (e) {
         grid.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>搜索失败: ' + escapeHtml(e.message) + '</p></div>';
     } finally {
@@ -950,18 +958,15 @@ async function slParseSonglistLink(link) {
     actionBtn.innerHTML = '<span class="spinner"></span>';
 
     try {
-        const params = new URLSearchParams({ source_id: slCurrentPlatform, id: link, page: 1 });
+        const params = new URLSearchParams({ source: slCurrentPlatform, id: link, page: 1 });
         const resp = await fetch(`${API_BASE}/songlist/detail?${params}`, { headers: getAuthHeaders() });
         const result = await resp.json();
-        if (result.code === 0) {
-            slDetailSongs = result.data.list || [];
-            slDetailInfo = result.data.info || {};
-            slDetailPage = 1;
-            slDetailTotal = result.data.total || 0;
-            slShowDetail();
-        } else {
-            showSnackbar('解析失败: ' + (result.msg || '未知错误'), 'error');
-        }
+        const data = result.success === true ? result.data : result;
+        slDetailSongs = data.list || [];
+        slDetailInfo = data.info || {};
+        slDetailPage = 1;
+        slDetailTotal = data.total || 0;
+        slShowDetail();
     } catch (e) {
         showSnackbar('解析失败: ' + e.message, 'error');
     } finally {
@@ -1052,19 +1057,16 @@ async function slOpenDetail(id) {
     slUpdateSelectedCount();
 
     try {
-        const params = new URLSearchParams({ source_id: slCurrentPlatform, id, page: 1 });
+        const params = new URLSearchParams({ source: slCurrentPlatform, id, page: 1 });
         const resp = await fetch(`${API_BASE}/songlist/detail?${params}`, { headers: getAuthHeaders() });
         const result = await resp.json();
-        if (result.code === 0) {
-            slDetailSongs = result.data.list || [];
-            slDetailInfo = result.data.info || {};
-            slDetailPage = 1;
-            slDetailTotal = result.data.total || 0;
-            slCurrentDetailId = id;
-            slShowDetail();
-        } else {
-            detailList.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败</p></div>';
-        }
+        const data = result.success === true ? result.data : result;
+        slDetailSongs = data.list || [];
+        slDetailInfo = data.info || {};
+        slDetailPage = 1;
+        slDetailTotal = data.total || 0;
+        slCurrentDetailId = id;
+        slShowDetail();
     } catch (e) {
         detailList.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败: ' + escapeHtml(e.message) + '</p></div>';
     }
@@ -1211,16 +1213,13 @@ async function slDetailPageNav(page) {
     detailList.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">hourglass_empty</span><p>加载中...</p></div>';
 
     try {
-        const params = new URLSearchParams({ source_id: slCurrentPlatform, id: slCurrentDetailId, page });
+        const params = new URLSearchParams({ source: slCurrentPlatform, id: slCurrentDetailId, page });
         const resp = await fetch(`${API_BASE}/songlist/detail?${params}`, { headers: getAuthHeaders() });
         const result = await resp.json();
-        if (result.code === 0) {
-            slDetailSongs = result.data.list || [];
-            slDetailTotal = result.data.total || 0;
-            slRenderDetailList();
-        } else {
-            detailList.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败</p></div>';
-        }
+        const data = result.success === true ? result.data : result;
+        slDetailSongs = data.list || [];
+        slDetailTotal = data.total || 0;
+        slRenderDetailList();
     } catch (e) {
         detailList.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">error</span><p>加载失败</p></div>';
     }
@@ -1325,27 +1324,44 @@ async function slImportSelectedSongs() {
             body: JSON.stringify(requestBody)
         });
         const result = await response.json();
-        if (result.code === 0) {
-            const data = result.data;
+        let isSuccess = false;
+        let successCount = 0;
+        let failedCount = 0;
+        let results = [];
+        let warning = '';
+        if (result.data && typeof result.data.success === 'boolean') {
+            isSuccess = result.data.success;
+            successCount = result.data.success ? (result.data.data ? result.data.data.success : 0) : 0;
+            failedCount = result.data.data ? result.data.data.failed : 0;
+            results = result.data.data ? (result.data.data.results || []) : [];
+            warning = result.data.data ? (result.data.data.warning || '') : '';
+        } else if (result && typeof result.success === 'number') {
+            isSuccess = result.success > 0 || result.failed === 0;
+            successCount = result.success;
+            failedCount = result.failed;
+            results = result.results || [];
+            warning = result.warning || '';
+        }
+        if (isSuccess) {
             progressFill.style.width = '100%';
-            progressText.textContent = `导入完成：成功 ${data.success} 首，失败 ${data.failed} 首`;
-            importResultsEl.innerHTML = (data.results || []).map(item =>
+            progressText.textContent = `导入完成：成功 ${successCount} 首，失败 ${failedCount} 首`;
+            importResultsEl.innerHTML = results.map(item =>
                 item.success
                     ? `<div class="import-result-item success">✓ ${escapeHtml(item.name)}</div>`
                     : `<div class="import-result-item error">✗ ${escapeHtml(item.name)}: ${escapeHtml(item.error)}</div>`
             ).join('');
-            if (result.data && result.data.warning) {
-                showSnackbar(result.data.warning, 'warning', 5000);
+            if (warning) {
+                showSnackbar(warning, 'warning', 5000);
             }
-            if (data.success > 0) {
-                showSnackbar(`成功导入 ${data.success} 首歌曲`, 'success');
+            if (successCount > 0) {
+                showSnackbar(`成功导入 ${successCount} 首歌曲`, 'success');
                 slSelectedSongs.clear();
                 slUpdateSelectedCount();
                 loadPlaylists();
             }
-            if (data.failed > 0) showSnackbar(`${data.failed} 首歌曲导入失败`, 'error');
+            if (failedCount > 0) showSnackbar(`${failedCount} 首歌曲导入失败`, 'error');
         } else {
-            const msg = result.msg || '未知错误';
+            const msg = result.message || result.error || '未知错误';
             const friendlyMsg = msg.includes('音源') ? '未配置有效的音源，无法获取播放链接。请先前往音源管理导入音源。' : msg;
             progressText.textContent = '导入失败: ' + friendlyMsg;
             showSnackbar('导入失败: ' + friendlyMsg, 'error');
